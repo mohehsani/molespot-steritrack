@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>SteriTrack</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="SteriTrack">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  :root{
+    --ink:#1C1E21; --inkSoft:#33363B; --sub:#5B6066; --faint:#9AA0A6;
+    --line:#E3E5E7; --lineStrong:#C9D2D8; --bg:#F7F7F8; --panel:#2B2E33; --white:#FFFFFF;
+    --dirty:#6B6F76; --dirtyBg:#EDEEF0; --sterile:#0F7A6C; --sterileBg:#0F7A6C1A;
+    --alert:#B3261E; --alertBg:#B3261E0D; --alertBorder:#B3261E33;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  body{padding-bottom:env(safe-area-inset-bottom);}
+  h1,h2,h3{margin:0;}
+  button{font-family:inherit; cursor:pointer;}
+  input, select{font-family:inherit;}
+  .display{font-family:-apple-system, BlinkMacSystemFont, sans-serif; font-weight:700;}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;}
+
+  /* header */
+  .header{position:sticky; top:0; z-index:20; background:var(--ink); color:var(--white);
+    padding:calc(20px + env(safe-area-inset-top)) 20px 16px;}
+  .header-row{display:flex; align-items:center; justify-content:space-between;}
+  .eyebrow{font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); font-weight:600;}
+  .title{font-size:22px; font-weight:700;}
+  .btn-new{min-height:46px; padding:0 16px; background:var(--white); color:var(--ink);
+    border:none; border-radius:12px; font-weight:600; font-size:14px; display:flex; align-items:center; gap:6px;}
+  .tabs{display:flex; gap:4px; margin-top:16px; background:var(--panel); border-radius:10px; padding:4px;}
+  .tab{flex:1; min-height:40px; border:none; border-radius:8px; font-weight:600; font-size:13px;
+    background:transparent; color:#C9CDD1; display:flex; align-items:center; justify-content:center; gap:6px;}
+  .tab.active{background:var(--white); color:var(--ink);}
+
+  .content{padding:16px; max-width:720px; margin:0 auto;}
+
+  /* empty state */
+  .empty{text-align:center; padding:80px 24px;}
+  .empty-icon{width:56px; height:56px; border-radius:16px; background:var(--white); border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center; margin:0 auto 16px; font-size:24px;}
+  .empty-title{font-weight:700; margin-bottom:4px; font-size:16px;}
+  .empty-sub{font-size:14px; color:var(--faint); margin-bottom:20px;}
+
+  /* card */
+  .card{width:100%; text-align:left; background:var(--white); border:1px solid var(--line); border-radius:14px;
+    padding:16px; margin-bottom:12px; display:block;}
+  .card-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; gap:8px;}
+  .card-id{font-size:13px; font-weight:600;}
+  .badge{padding:2px 8px; font-size:12px; font-weight:600; border-radius:6px; white-space:nowrap;}
+  .badge-neutral{background:var(--dirtyBg); color:#4A4E54;}
+  .badge-sterile{background:var(--sterileBg); color:var(--sterile);}
+  .badge-alert{background:#B3261E1A; color:var(--alert);}
+  .card-contents{font-size:15px; font-weight:500; margin-bottom:2px;}
+  .card-meta{font-size:13px; color:var(--faint); display:flex; gap:12px; flex-wrap:wrap;}
+
+  /* zone rail */
+  .rail{display:flex; align-items:center; gap:4px; width:100%; margin-top:12px;}
+  .rail-step{flex:1; height:32px; border-radius:6px; display:flex; align-items:center; justify-content:center;
+    font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; text-align:center; padding:0 4px;
+    border:1px solid var(--line); background:#F4F5F6; color:var(--faint);}
+  .rail-arrow{color:var(--lineStrong); font-size:12px; flex-shrink:0;}
+
+  /* search/export row */
+  .row-gap{display:flex; gap:8px; margin-bottom:12px;}
+  .search-wrap{position:relative; flex:1;}
+  .search-wrap input{padding-left:36px;}
+  .search-icon{position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--faint); font-size:14px;}
+  .btn-export{min-height:46px; padding:0 16px; border-radius:10px; border:1px solid var(--lineStrong);
+    background:var(--white); font-size:14px; font-weight:600; display:flex; align-items:center; gap:6px; color:var(--ink);}
+
+  /* form controls */
+  .field{display:block; margin-bottom:16px;}
+  .field-label{display:block; font-size:13px; font-weight:500; color:var(--sub); margin-bottom:6px;}
+  .input, select.input{width:100%; min-height:46px; padding:0 14px; border-radius:10px; border:1px solid var(--lineStrong);
+    background:var(--white); font-size:15px; color:var(--ink); outline:none;}
+  select.input{appearance:auto; -webkit-appearance:menulist;}
+  .yn-row{display:flex; gap:8px;}
+  .yn-btn{flex:1; min-height:46px; border-radius:10px; font-weight:600; font-size:14px; border:1px solid var(--lineStrong);
+    background:var(--white); color:var(--sub);}
+  .yn-btn.sel-pos{background:var(--sterile); color:var(--white); border-color:var(--sterile);}
+  .yn-btn.sel-neg{background:var(--alert); color:var(--white); border-color:var(--alert);}
+  .checkbox-row{display:flex; align-items:center; gap:12px; background:var(--white); border:1px solid var(--lineStrong);
+    border-radius:10px; padding:0 14px; min-height:46px; margin-bottom:8px;}
+  .checkbox-row input{width:20px; height:20px;}
+
+  /* buttons */
+  .btn{min-height:52px; padding:0 20px; border-radius:12px; font-weight:600; font-size:15px; border:none;
+    display:flex; align-items:center; justify-content:center; gap:8px; flex:1;}
+  .btn-primary{background:var(--ink); color:var(--white);}
+  .btn-ghost{background:var(--white); color:var(--ink); border:1px solid var(--lineStrong);}
+  .btn-danger{background:var(--alert); color:var(--white);}
+  .btn-success{background:var(--sterile); color:var(--white);}
+  .btn:disabled{opacity:.4; pointer-events:none;}
+  .btn-row{display:flex; gap:8px;}
+
+  /* sheet / modal */
+  .overlay{position:fixed; inset:0; z-index:30; background:rgba(0,0,0,.3); display:flex;
+    align-items:flex-end; justify-content:center;}
+  .sheet{width:100%; max-width:560px; max-height:92vh; background:var(--bg); border-radius:20px 20px 0 0;
+    display:flex; flex-direction:column; overflow:hidden;}
+  .sheet-header{display:flex; align-items:center; justify-content:space-between; padding:16px 20px;
+    border-bottom:1px solid var(--line); background:var(--white);}
+  .sheet-title{font-size:17px; font-weight:700;}
+  .sheet-close{width:36px; height:36px; border-radius:999px; background:#F4F5F6; border:none;
+    display:flex; align-items:center; justify-content:center; font-size:18px; color:var(--ink);}
+  .sheet-body{overflow-y:auto; padding:16px 20px; flex:1; -webkit-overflow-scrolling:touch;}
+  .sheet-footer{padding:16px 20px calc(16px + env(safe-area-inset-bottom)); border-top:1px solid var(--line);
+    background:var(--white); display:flex; gap:8px;}
+
+  /* stage blocks */
+  .stage-block{border-radius:14px; padding:16px; margin-bottom:14px;}
+  .stage-block.pending{border:1px solid var(--ink); background:var(--white);}
+  .stage-block.done{border:1px solid var(--line); background:#FAFAFA;}
+  .stage-head{display:flex; align-items:center; gap:8px; margin-bottom:12px; font-weight:600; font-size:14px;}
+  .stage-head .check{margin-left:auto; color:var(--sterile);}
+  .summary-row{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; font-size:13px;}
+  .summary-row .val{font-weight:500; color:var(--ink); text-align:right;}
+  .hint{font-size:13px; color:var(--sub); background:#F4F5F6; border-radius:10px; padding:12px; margin-bottom:16px;}
+  .warn-text{font-size:13px; color:var(--alert); margin-bottom:8px;}
+  .alert-box{background:var(--alertBg); border:1px solid var(--alertBorder); border-radius:10px; padding:14px;
+    font-size:14px; color:var(--alert); margin-bottom:16px;}
+  .quarantine-link{display:block; width:100%; text-align:center; font-size:13px; color:var(--alert);
+    font-weight:500; padding-top:8px; background:none; border:none;}
+
+  .toast{position:fixed; bottom:16px; right:16px; font-size:11px; color:var(--faint); background:var(--white);
+    border:1px solid var(--line); border-radius:999px; padding:4px 12px; z-index:40;}
+
+  /* pack chips */
+  .pack-add-row{display:flex; gap:8px; margin-bottom:10px;}
+  .pack-add-row select{flex:1;}
+  .chip-list{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px;}
+  .chip{display:flex; align-items:center; gap:6px; background:var(--dirtyBg); border-radius:999px;
+    padding:6px 6px 6px 14px; font-size:13px; font-weight:500;}
+  .chip button{width:20px; height:20px; border-radius:999px; background:rgba(0,0,0,.08); border:none;
+    display:flex; align-items:center; justify-content:center; font-size:12px; color:var(--sub);}
+  .chip-empty{font-size:13px; color:var(--faint); padding:8px 0;}
+
+  /* per-pack release card */
+  .pack-item{border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:10px; background:var(--white);}
+  .pack-item.pack-released{background:var(--sterileBg); border-color:var(--sterile);}
+  .pack-item.pack-quarantined{background:var(--alertBg); border-color:var(--alert);}
+  .pack-item-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;}
+  .pack-item-name{font-weight:600; font-size:14px;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+(function(){
+  "use strict";
+
+  var LOADS_KEY = "steritrack_loads_v1";
+  var LISTS_KEY = "steritrack_lists_v1";
+  var DEFAULT_LISTS = {
+    instrumentSets: [], washerPrograms: [], operators: [],
+    sterPrograms: ["Universal-Program 134°C wrapped", "Quick-Program S 134°C unwrapped", "Gentle-Program 121°C", "Prion-Program 134°C wrapped"]
+  };
+  var PPE_ITEMS = ["Utility/heavy-duty gloves","Protective eyewear or face shield","Fluid-resistant apron/gown","Closed footwear"];
+  var STAGES = [
+    {key:"washing", label:"Washing"},
+    {key:"ready_to_pack", label:"Ready to pack"},
+    {key:"sterilising", label:"Sterilising"},
+    {key:"cooling", label:"Cooling"},
+    {key:"done", label:"Cool & release"},
+  ];
+
+  function loadJSON(key, fallback){
+    try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+    catch(e){ return fallback; }
+  }
+  function saveJSON(key, val){
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){ console.warn("Storage full or unavailable", e); }
+  }
+  function uid(){ return Math.random().toString(36).slice(2,9); }
+  function todayStamp(){
+    var d = new Date();
+    return "" + d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0");
+  }
+  function fmtTime(iso){
+    if(!iso) return "—";
+    var d = new Date(iso);
+    return d.toLocaleString("en-AU", {day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit"});
+  }
+  function esc(s){
+    return String(s==null?"":s).replace(/[&<>"']/g, function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+  function stageIdx(key){ for(var i=0;i<STAGES.length;i++) if(STAGES[i].key===key) return i; return -1; }
+
+  // ---------- pack-status helpers ----------
+  function packCounts(load){
+    var packs = load.packs || [];
+    var released = packs.filter(function(p){return p.status==="released";}).length;
+    var quarantined = packs.filter(function(p){return p.status==="quarantined";}).length;
+    var pending = packs.filter(function(p){return p.status==="pending";}).length;
+    return {total: packs.length, released:released, quarantined:quarantined, pending:pending};
+  }
+  function overallStatus(load){
+    if(load.stage === "quarantined") return {label:"Quarantined", tone:"alert"};
+    if(load.stage !== "done"){
+      var s = STAGES.filter(function(x){return x.key===load.stage;})[0];
+      return {label: s ? s.label : load.stage, tone:"neutral"};
+    }
+    var c = packCounts(load);
+    if(c.pending > 0) return {label:"Releasing ("+(c.released+c.quarantined)+"/"+c.total+")", tone:"neutral"};
+    if(c.quarantined === 0) return {label:"Released", tone:"sterile"};
+    if(c.released === 0) return {label:"All quarantined", tone:"alert"};
+    return {label:"Partially released", tone:"alert"};
+  }
+  function isActiveLoad(load){
+    if(load.stage === "quarantined") return false;
+    if(load.stage !== "done") return true;
+    return packCounts(load).pending > 0;
+  }
+
+  // ---------- state ----------
+  var state = {
+    loads: loadJSON(LOADS_KEY, []),
+    lists: Object.assign({}, DEFAULT_LISTS, loadJSON(LISTS_KEY, {})),
+    tab: "active",
+    openLoadId: null,
+    showNew: false,
+    search: "",
+    confirming: null,     // which inline form is open inside the detail sheet
+    addingField: null,    // which ComboField is in "add new" mode
+  };
+
+  function persistLoads(){ saveJSON(LOADS_KEY, state.loads); }
+  function persistLists(){ saveJSON(LISTS_KEY, state.lists); }
+  function addToList(cat, val){
+    val = (val||"").trim();
+    if(!val) return;
+    if(state.lists[cat].indexOf(val) === -1){
+      state.lists[cat] = state.lists[cat].concat([val]);
+      persistLists();
+    }
+  }
+  function findLoad(id){ return state.loads.filter(function(l){return l.id===id;})[0]; }
+  function updateLoad(id, patch){
+    state.loads = state.loads.map(function(l){ return l.id===id ? Object.assign({}, l, patch) : l; });
+    persistLoads();
+    render();
+  }
+  function updatePack(loadId, packId, patch){
+    state.loads = state.loads.map(function(l){
+      if(l.id !== loadId) return l;
+      var packs = l.packs.map(function(p){ return p.id===packId ? Object.assign({}, p, patch) : p; });
+      return Object.assign({}, l, {packs: packs});
+    });
+    persistLoads();
+    render();
+  }
+  function nextLoadId(){
+    var stamp = todayStamp();
+    var todays = state.loads.filter(function(l){ return l.id.indexOf(stamp) !== -1; });
+    return "W-" + stamp + "-" + String(todays.length+1).padStart(2,"0");
+  }
+
+  // ---------- render ----------
+  var root = document.getElementById("app");
+
+  function render(){
+    var active = state.loads.filter(isActiveLoad);
+    var history = state.loads.filter(function(l){ return !isActiveLoad(l); });
+
+    var html = '';
+    html += headerHTML(active.length);
+    html += '<div class="content">';
+    if(state.tab === "active"){
+      html += active.length === 0 ? emptyStateHTML() : active.map(function(l){return cardHTML(l);}).join("");
+    } else {
+      html += historyControlsHTML();
+      var q = state.search.toLowerCase();
+      var filtered = history.filter(function(l){
+        if(!q) return true;
+        var packNames = (l.packs||[]).map(function(p){return p.name;}).join(" ");
+        return (l.id+" "+(l.sterId||"")+" "+packNames+" "+l.operator).toLowerCase().indexOf(q) !== -1;
+      });
+      html += filtered.length === 0
+        ? '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No records yet.</div>'
+        : filtered.map(function(l){ return cardHTML(l, true); }).join("");
+    }
+    html += '</div>';
+
+    root.innerHTML = html;
+    bindHeaderEvents();
+    bindCardEvents();
+
+    var overlayHost = document.createElement("div");
+    if(state.showNew) overlayHost.innerHTML = newLoadSheetHTML();
+    else if(state.openLoadId) overlayHost.innerHTML = loadDetailHTML(findLoad(state.openLoadId));
+    while(overlayHost.firstChild) root.appendChild(overlayHost.firstChild);
+
+    if(state.showNew) bindNewLoadEvents();
+    if(state.openLoadId) bindDetailEvents();
+  }
+
+  function headerHTML(activeCount){
+    return ''+
+    '<div class="header">'+
+      '<div class="header-row">'+
+        '<div><div class="eyebrow">MoleSpot Skin Cancer Clinic</div><div class="title display">SteriTrack</div></div>'+
+        '<button class="btn-new" id="btn-new-load">+ New load</button>'+
+      '</div>'+
+      '<div class="tabs">'+
+        '<button class="tab '+(state.tab==="active"?"active":"")+'" data-tab="active">In progress ('+activeCount+')</button>'+
+        '<button class="tab '+(state.tab==="history"?"active":"")+'" data-tab="history">History</button>'+
+      '</div>'+
+    '</div>';
+  }
+  function bindHeaderEvents(){
+    document.getElementById("btn-new-load").onclick = function(){ state.showNew = true; render(); };
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(btn){
+      btn.onclick = function(){ state.tab = btn.getAttribute("data-tab"); render(); };
+    });
+  }
+
+  function emptyStateHTML(){
+    return '<div class="empty">'+
+      '<div class="empty-icon">💧</div>'+
+      '<div class="empty-title display">No loads in progress</div>'+
+      '<div class="empty-sub">Start a new washer load to begin tracking a batch of packs.</div>'+
+      '<button class="btn btn-primary" style="display:inline-flex; flex:none;" id="btn-empty-new">+ Start a load</button>'+
+    '</div>';
+  }
+
+  function historyControlsHTML(){
+    return '<div class="row-gap">'+
+      '<div class="search-wrap"><span class="search-icon">🔍</span>'+
+        '<input class="input" id="search-input" placeholder="Search load ID, pack, operator…" value="'+esc(state.search)+'"></div>'+
+      '<button class="btn-export" id="btn-export">⬇ Export</button>'+
+    '</div>';
+  }
+
+  function railHTML(stage){
+    var idx = stageIdx(stage === "quarantined" ? "washing" : stage);
+    var html = '<div class="rail">';
+    STAGES.forEach(function(s, i){
+      var active = i <= idx && stage !== "quarantined";
+      var isCurrent = s.key === stage;
+      var bg = "#F4F5F6", color = "var(--faint)", border = "var(--line)";
+      if(active){
+        if(s.key==="washing"){ bg="var(--dirty)"; color="#fff"; border="var(--dirty)"; }
+        else if(s.key==="ready_to_pack"||s.key==="sterilising"){ bg="#fff"; color="var(--ink)"; border="var(--lineStrong)"; }
+        else { bg="var(--sterile)"; color="#fff"; border="var(--sterile)"; }
+      }
+      html += '<div class="rail-step" style="background:'+bg+'; color:'+color+'; border-color:'+border+
+        (isCurrent?'; box-shadow:0 0 0 2px #1C1E2122':'')+'">'+s.label+'</div>';
+      if(i<STAGES.length-1) html += '<span class="rail-arrow">›</span>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function packSummaryText(load){
+    var names = (load.packs||[]).map(function(p){return p.name;});
+    if(names.length === 0) return "No packs added";
+    if(names.length <= 2) return names.join(", ");
+    return names.slice(0,2).join(", ") + " +" + (names.length-2) + " more";
+  }
+
+  function cardHTML(l, compact){
+    var os = overallStatus(l);
+    var c = packCounts(l);
+    return '<button class="card" data-open="'+l.id+'">'+
+      '<div class="card-top"><div class="card-id mono">'+esc(l.id)+(l.sterId?' → '+esc(l.sterId):'')+'</div>'+
+      '<span class="badge badge-'+os.tone+'">'+esc(os.label)+'</span></div>'+
+      '<div class="card-contents">'+esc(packSummaryText(l))+' <span style="color:var(--faint); font-weight:400;">('+c.total+' pack'+(c.total===1?'':'s')+')</span></div>'+
+      '<div class="card-meta"><span>👤 '+esc(l.operator||"—")+'</span><span>🕒 '+fmtTime(l.createdAt)+'</span></div>'+
+      (!compact ? railHTML(l.stage) : '')+
+    '</button>';
+  }
+
+  function bindCardEvents(){
+    var newBtn = document.getElementById("btn-empty-new");
+    if(newBtn) newBtn.onclick = function(){ state.showNew = true; render(); };
+    var exportBtn = document.getElementById("btn-export");
+    if(exportBtn) exportBtn.onclick = exportCsv;
+    var searchInput = document.getElementById("search-input");
+    if(searchInput) searchInput.oninput = function(){ state.search = searchInput.value; render(); searchInput.focus(); searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length; };
+    Array.prototype.forEach.call(document.querySelectorAll("[data-open]"), function(btn){
+      btn.onclick = function(){ state.openLoadId = btn.getAttribute("data-open"); state.confirming = null; render(); };
+    });
+  }
+
+  function exportCsv(){
+    var history = state.loads.filter(function(l){ return !isActiveLoad(l); });
+    var headers = ["Washer Load ID","Steriliser Batch No.","Pack Name","Pack Status","Operator","Releaser","Release Time"];
+    var rows = [];
+    history.forEach(function(l){
+      (l.packs||[]).forEach(function(p){
+        rows.push([l.id, l.sterId||"", p.name, p.status, l.operator, p.releaser||"", p.releaseTime?fmtTime(p.releaseTime):""]);
+      });
+      if(!(l.packs||[]).length){
+        rows.push([l.id, l.sterId||"", "", l.stage, l.operator, "", ""]);
+      }
+    });
+    var csv = [headers].concat(rows).map(function(r){
+      return r.map(function(v){ return '"'+String(v||"").replace(/"/g,'""')+'"'; }).join(",");
+    }).join("\n");
+    var blob = new Blob([csv], {type:"text/csv"});
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "molespot-reprocessing-log-"+todayStamp()+".csv";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+
+  // ---------- ComboField (select + add-new) ----------
+  function comboFieldHTML(id, label, value, options, placeholder){
+    if(state.addingField === id){
+      return '<div class="field"><span class="field-label">'+esc(label)+'</span>'+
+        '<div style="display:flex; gap:8px;">'+
+          '<input class="input" id="'+id+'-newval" placeholder="Type new value…" style="flex:1">'+
+          '<button class="btn btn-primary" style="flex:none; min-height:46px; padding:0 16px;" id="'+id+'-add-confirm">Add</button>'+
+          '<button class="btn btn-ghost" style="flex:none; min-height:46px; padding:0 14px;" id="'+id+'-add-cancel">Cancel</button>'+
+        '</div></div>';
+    }
+    var opts = '<option value="" disabled '+(options.indexOf(value)===-1?"selected":"")+'>'+esc(placeholder||"Select…")+'</option>';
+    options.forEach(function(o){
+      opts += '<option value="'+esc(o)+'" '+(o===value?"selected":"")+'>'+esc(o)+'</option>';
+    });
+    opts += '<option value="__add__">+ Add new…</option>';
+    return '<div class="field"><span class="field-label">'+esc(label)+'</span>'+
+      '<select class="input" id="'+id+'">'+opts+'</select></div>';
+  }
+  function bindComboField(id, category, onValue, rerenderFn){
+    var sel = document.getElementById(id);
+    if(sel){
+      sel.onchange = function(){
+        if(sel.value === "__add__"){ state.addingField = id; rerenderFn(); }
+        else { onValue(sel.value); }
+      };
+    }
+    var addBtn = document.getElementById(id+"-add-confirm");
+    if(addBtn){
+      addBtn.onclick = function(){
+        var input = document.getElementById(id+"-newval");
+        var v = (input.value||"").trim();
+        if(v){ addToList(category, v); onValue(v); }
+        state.addingField = null;
+        rerenderFn();
+      };
+    }
+    var cancelBtn = document.getElementById(id+"-add-cancel");
+    if(cancelBtn){
+      cancelBtn.onclick = function(){ state.addingField = null; rerenderFn(); };
+    }
+  }
+
+  function ynRowHTML(name, value, options){
+    options = options || ["Y","N"];
+    return '<div class="yn-row">' + options.map(function(o){
+      var cls = value===o ? (o==="N" ? "sel-neg" : "sel-pos") : "";
+      return '<button class="yn-btn '+cls+'" data-yn="'+name+'" data-val="'+o+'">'+o+'</button>';
+    }).join("") + '</div>';
+  }
+  function bindYnRow(name, onPick){
+    Array.prototype.forEach.call(document.querySelectorAll('[data-yn="'+name+'"]'), function(btn){
+      btn.onclick = function(){ onPick(btn.getAttribute("data-val")); };
+    });
+  }
+
+  // ---------- New Load sheet ----------
+  var newLoadDraft = { packs:[], packDraftName:"", operator:"", program:"", ppe:{} };
+  function newLoadSheetHTML(){
+    var allPpe = PPE_ITEMS.every(function(p){ return !!newLoadDraft.ppe[p]; });
+    var canStart = newLoadDraft.packs.length > 0 && newLoadDraft.operator && newLoadDraft.program && allPpe;
+    var ppeHtml = PPE_ITEMS.map(function(p){
+      return '<label class="checkbox-row"><input type="checkbox" data-ppe="'+esc(p)+'" '+(newLoadDraft.ppe[p]?"checked":"")+'><span>'+esc(p)+'</span></label>';
+    }).join("");
+    var chipsHtml = newLoadDraft.packs.length === 0
+      ? '<div class="chip-empty">No packs added yet — add at least one below.</div>'
+      : '<div class="chip-list">' + newLoadDraft.packs.map(function(name, i){
+          return '<div class="chip">'+esc(name)+'<button data-remove-pack="'+i+'">✕</button></div>';
+        }).join("") + '</div>';
+    return '<div class="overlay" id="new-overlay"><div class="sheet">'+
+      '<div class="sheet-header"><div class="sheet-title display">New washer load</div><button class="sheet-close" id="new-close">✕</button></div>'+
+      '<div class="sheet-body">'+
+        '<div class="field"><span class="field-label">Packs in this load</span></div>'+
+        chipsHtml+
+        '<div class="pack-add-row">'+
+          comboFieldPlainSelect("nl-pack-select", state.lists.instrumentSets, newLoadDraft.packDraftName)+
+          '<button class="btn btn-ghost" style="flex:none; min-height:46px; padding:0 16px;" id="nl-pack-add">+ Add</button>'+
+        '</div>'+
+        comboFieldHTML("nl-operator", "Operator", newLoadDraft.operator, state.lists.operators, "Select your name…")+
+        comboFieldHTML("nl-program", "Washer program", newLoadDraft.program, state.lists.washerPrograms, "Select washer program…")+
+        '<div class="hint">Sterilising is done in batches, so the patient isn\'t known yet — that link gets recorded later in BP Premier, when each pack is actually opened for use.</div>'+
+        '<div><span class="field-label">PPE confirmed (Section 8, Step 3–4)</span>'+ppeHtml+'</div>'+
+      '</div>'+
+      '<div class="sheet-footer"><button class="btn btn-primary" id="new-start" '+(canStart?"":"disabled")+'>💧 Start washer cycle</button></div>'+
+    '</div></div>';
+  }
+  // A lightweight select (no add-new) used specifically for picking a pack name to add to the chip list —
+  // adding brand-new instrument-set names is still possible via the normal "+ Add new…" combo elsewhere,
+  // so this just needs to offer existing options plus free text.
+  function comboFieldPlainSelect(id, options, value){
+    var opts = '<option value="">Type or pick a pack name…</option>';
+    options.forEach(function(o){ opts += '<option value="'+esc(o)+'" '+(o===value?"selected":"")+'>'+esc(o)+'</option>'; });
+    return '<input class="input" id="'+id+'" list="'+id+'-list" placeholder="e.g. Excision set A" value="'+esc(value||"")+'">'+
+      '<datalist id="'+id+'-list">' + options.map(function(o){ return '<option value="'+esc(o)+'">'; }).join("") + '</datalist>';
+  }
+  function closeNew(){ state.showNew = false; newLoadDraft = { packs:[], packDraftName:"", operator:"", program:"", ppe:{} }; state.addingField = null; render(); }
+  function bindNewLoadEvents(){
+    document.getElementById("new-close").onclick = closeNew;
+    document.getElementById("new-overlay").onclick = function(e){ if(e.target.id==="new-overlay") closeNew(); };
+
+    var packInput = document.getElementById("nl-pack-select");
+    if(packInput) packInput.oninput = function(){ newLoadDraft.packDraftName = packInput.value; };
+    var addPackBtn = document.getElementById("nl-pack-add");
+    if(addPackBtn) addPackBtn.onclick = function(){
+      var name = (newLoadDraft.packDraftName||"").trim();
+      if(!name) return;
+      newLoadDraft.packs = newLoadDraft.packs.concat([name]);
+      addToList("instrumentSets", name);
+      newLoadDraft.packDraftName = "";
+      render();
+    };
+    Array.prototype.forEach.call(document.querySelectorAll("[data-remove-pack]"), function(btn){
+      btn.onclick = function(){
+        var i = parseInt(btn.getAttribute("data-remove-pack"), 10);
+        newLoadDraft.packs = newLoadDraft.packs.filter(function(_, idx){ return idx!==i; });
+        render();
+      };
+    });
+
+    bindComboField("nl-operator", "operators", function(v){ newLoadDraft.operator=v; render(); }, render);
+    bindComboField("nl-program", "washerPrograms", function(v){ newLoadDraft.program=v; render(); }, render);
+    Array.prototype.forEach.call(document.querySelectorAll("[data-ppe]"), function(cb){
+      cb.onchange = function(){ newLoadDraft.ppe[cb.getAttribute("data-ppe")] = cb.checked; render(); };
+    });
+    var startBtn = document.getElementById("new-start");
+    if(startBtn) startBtn.onclick = function(){
+      var load = {
+        id: nextLoadId(), sterId:null, createdAt: new Date().toISOString(), stage:"washing",
+        operator: newLoadDraft.operator, washerProgram: newLoadDraft.program, washerStart: new Date().toISOString(),
+        packs: newLoadDraft.packs.map(function(name){
+          return {id: uid(), name: name, class1:null, pouchOk:null, status:"pending", quarantineReason:null, releaser:null, releaseTime:null};
+        }),
+      };
+      state.loads = [load].concat(state.loads);
+      persistLoads();
+      state.openLoadId = load.id;
+      closeNew();
+    };
+  }
+
+  // ---------- Load Detail sheet ----------
+  var detailDraft = {}; // scratch state for the currently-open inline form
+  function loadDetailHTML(load){
+    if(!load) return "";
+    var stage = load.stage;
+    var idx = stageIdx(stage === "quarantined" ? "washing" : stage);
+    var body = '';
+    body += railHTML(stage);
+    body += summaryRow("Operator", load.operator);
+    body += summaryRow("Packs", packSummaryText(load));
+
+    if(stage === "quarantined"){
+      body += '<div class="alert-box"><strong>⚠ Whole load quarantined</strong><br>'+esc(load.quarantineReason)+'</div>';
+    }
+
+    // Washer stage
+    body += '<div class="stage-block '+(idx>0 && stage!=="quarantined"?"done":"pending")+'">'+
+      '<div class="stage-head">💧 Washer-disinfector'+(idx>0 && stage!=="quarantined"?'<span class="check">✓</span>':'')+'</div>'+
+      summaryRow("Program", load.washerProgram, true) + summaryRow("Started", fmtTime(load.washerStart), true);
+    if(stage === "washing"){
+      body += state.confirming === "washer_result" ? washerResultFormHTML() :
+        '<button class="btn btn-primary" id="btn-washer-done">✓ Mark cycle complete</button>';
+    }
+    body += '</div>';
+
+    // Pack & steriliser stage
+    if(idx >= 1 && stage !== "quarantined"){
+      body += '<div class="stage-block '+(idx>2?"done":"pending")+'">'+
+        '<div class="stage-head">🧪 Pack & steriliser'+(idx>2?'<span class="check">✓</span>':'')+'</div>';
+      if(stage === "ready_to_pack"){
+        body += state.confirming === "pack" ? packFormHTML(load) :
+          '<button class="btn btn-primary" id="btn-pack">📦 Pack &amp; start steriliser</button>';
+      } else {
+        if(load.sterId) body += summaryRow("MELAG batch no.", load.sterId, true, true);
+        body += summaryRow("Program", load.sterProgram, true);
+        body += summaryRow("Started", fmtTime(load.sterStart), true);
+      }
+      if(stage === "sterilising"){
+        body += state.confirming === "ster_result" ? sterResultFormHTML() :
+          '<button class="btn btn-primary" id="btn-ster-done">✓ Read batch no. &amp; mark complete</button>';
+      }
+      body += '</div>';
+    }
+
+    // Cool & release stage
+    if(idx >= 3 && stage !== "quarantined"){
+      body += '<div class="stage-block '+(stage==="done"?"done":"pending")+'">'+
+        '<div class="stage-head">🛡 Cool & release'+(stage==="done"?'<span class="check">✓</span>':'')+'</div>';
+      if(stage === "cooling"){
+        body += state.confirming === "cool_setup" ? coolSetupFormHTML() :
+          '<button class="btn btn-success" id="btn-cool-setup">🔒 Confirm cool-down &amp; releaser</button>';
+      } else if(stage === "done"){
+        body += summaryRow("Cooled & confirmed by", load.releaser, true);
+        body += packReleaseListHTML(load);
+      }
+      body += '</div>';
+    }
+
+    if(stage === "done"){
+      var released = (load.packs||[]).filter(function(p){return p.status==="released";});
+      if(released.length){
+        body += '<div class="stage-block pending"><div class="stage-head">👤 Patient linkage</div>'+
+          '<div style="font-size:13px; color:var(--faint); margin-bottom:8px;">When each pack below is opened for use, record its batch + pack name directly in the patient\'s file in BP Premier. Not tracked here.</div>'+
+          released.map(function(p){
+            return '<div style="font-size:13px; padding:4px 0;">Batch <strong class="mono" style="color:var(--ink)">'+esc(load.sterId)+'</strong> — '+esc(p.name)+'</div>';
+          }).join('') +
+        '</div>';
+      }
+    }
+
+    return '<div class="overlay" id="detail-overlay"><div class="sheet">'+
+      '<div class="sheet-header"><div class="sheet-title mono">'+esc(load.id)+'</div><button class="sheet-close" id="detail-close">✕</button></div>'+
+      '<div class="sheet-body">'+body+'</div>'+
+    '</div></div>';
+  }
+  function summaryRow(label, value, small, mono){
+    if(value === undefined || value === null) return "";
+    return '<div class="summary-row" style="font-size:'+(small?"12px":"13px")+'"><span>'+esc(label)+'</span>'+
+      '<span class="val'+(mono?" mono":"")+'" style="font-size:'+(small?"13px":"14px")+'">'+esc(value===""?"—":value)+'</span></div>';
+  }
+
+  function washerResultFormHTML(){
+    var d = detailDraft;
+    if(d.showFail){
+      return '<div style="padding-top:8px;">'+
+        '<div class="field"><span class="field-label">Reason (alarm, interruption, deviation)</span>'+
+        '<input class="input" id="wf-reason" value="'+esc(d.failReason||"")+'"></div>'+
+        '<div class="btn-row"><button class="btn btn-ghost" id="wf-back">Back</button>'+
+        '<button class="btn btn-danger" id="wf-quarantine" '+((d.failReason||"").trim()?"":"disabled")+'>⚠ Quarantine load</button></div></div>';
+    }
+    return '<div class="btn-row" style="padding-top:8px;">'+
+      '<button class="btn btn-danger" id="wr-fail">Cycle failed</button>'+
+      '<button class="btn btn-success" id="wr-pass">✓ Cycle passed</button></div>';
+  }
+
+  function packFormHTML(load){
+    var d = detailDraft;
+    if(!d.packChecks) d.packChecks = {};
+    var allClass1Set = (load.packs||[]).every(function(p){ return d.packChecks[p.id] && d.packChecks[p.id].class1==="Y"; });
+    var program = d.program || "";
+    var canSubmit = allClass1Set && program;
+    var html = '<div style="padding-top:8px;">';
+    html += '<div class="field-label" style="margin-bottom:8px;">Indicators — confirm for each pack before sealing</div>';
+    (load.packs||[]).forEach(function(p){
+      var pc = d.packChecks[p.id] || {class1:null};
+      d.packChecks[p.id] = pc;
+      html += '<div class="pack-item"><div class="pack-item-head"><span class="pack-item-name">'+esc(p.name)+'</span></div>';
+      html += '<div class="field" style="margin-bottom:0;"><span class="field-label">Class 1 indicator present (mandatory)</span>'+ynRowHTML("class1-"+p.id, pc.class1)+'</div>';
+      html += '</div>';
+    });
+    html += comboFieldHTML("pf-program", "Steriliser program", program, state.lists.sterPrograms, "Select steriliser program…");
+    if(!allClass1Set) html += '<div class="warn-text">Every pack needs its Class 1 indicator confirmed before starting the steriliser.</div>';
+    html += '<div class="btn-row"><button class="btn btn-ghost" id="pf-cancel">Cancel</button>'+
+      '<button class="btn btn-primary" id="pf-submit" '+(canSubmit?"":"disabled")+'>🧪 Start steriliser</button></div>';
+    html += '</div>';
+    return html;
+  }
+
+  function sterResultFormHTML(){
+    var d = detailDraft;
+    var batchNo = d.batchNo||"", params = d.params||null, reason = d.sterReason||"";
+    var anyNo = params==="N";
+    var bothOk = params==="Y" && batchNo;
+    var html = '<div style="padding-top:8px;">';
+    html += '<div class="field"><span class="field-label">MELAG batch number (read from steriliser display)</span>'+
+      '<input class="input" id="sr-batch" value="'+esc(batchNo)+'" placeholder="e.g. 46"></div>';
+    html += '<div class="field"><span class="field-label">Time/temp/pressure parameters achieved</span>'+ynRowHTML("params", params)+'</div>';
+    if(anyNo){
+      html += '<div class="field"><span class="field-label">Reason for failure</span><input class="input" id="sr-reason" value="'+esc(reason)+'"></div>';
+    }
+    html += '<div class="btn-row"><button class="btn btn-ghost" id="sr-cancel">Cancel</button>';
+    if(anyNo){
+      html += '<button class="btn btn-danger" id="sr-quarantine" '+((reason||"").trim()?"":"disabled")+'>⚠ Quarantine load</button>';
+    } else {
+      html += '<button class="btn btn-success" id="sr-confirm" '+(bothOk?"":"disabled")+'>✓ Confirm &amp; cool</button>';
+    }
+    html += '</div></div>';
+    return html;
+  }
+
+  function coolSetupFormHTML(){
+    var d = detailDraft;
+    var cooled = !!d.cooled, releaser = d.releaser||"";
+    var canProceed = cooled && releaser;
+    var html = '<div style="padding-top:8px;">';
+    html += '<label class="checkbox-row"><input type="checkbox" id="cs-cooled" '+(cooled?"checked":"")+'>'+
+      '<span>Packs cooled undisturbed — no condensation or damage</span></label>';
+    html += comboFieldHTML("cs-releaser", "Releaser name/initials", releaser, state.lists.operators, "Select releaser…");
+    html += '<div class="btn-row"><button class="btn btn-ghost" id="cs-cancel">Cancel</button>'+
+      '<button class="btn btn-success" id="cs-confirm" '+(canProceed?"":"disabled")+'>Continue to per-pack release</button></div>';
+    html += '</div>';
+    return html;
+  }
+
+  function packReleaseListHTML(load){
+    var html = '<div style="padding-top:4px;">';
+    (load.packs||[]).forEach(function(p){
+      var cls = p.status==="released" ? "pack-released" : p.status==="quarantined" ? "pack-quarantined" : "";
+      html += '<div class="pack-item '+cls+'"><div class="pack-item-head">'+
+        '<span class="pack-item-name">'+esc(p.name)+'</span>'+
+        '<span class="badge badge-'+(p.status==="released"?"sterile":p.status==="quarantined"?"alert":"neutral")+'">'+esc(p.status)+'</span>'+
+        '</div>';
+      if(p.status === "pending"){
+        var checking = detailDraft.packChecking === p.id;
+        if(checking){
+          var pouch = detailDraft.pouchOk || null;
+          var reason = detailDraft.packReason || "";
+          html += '<div class="field"><span class="field-label">Pouch dry, sealed, intact</span>'+ynRowHTML("pouch-"+p.id, pouch)+'</div>';
+          if(pouch === "N"){
+            html += '<div class="field"><span class="field-label">Reason</span><input class="input" id="pr-reason" value="'+esc(reason)+'"></div>';
+            html += '<div class="btn-row"><button class="btn btn-ghost" data-pack-cancel="'+p.id+'">Cancel</button>'+
+              '<button class="btn btn-danger" data-pack-quarantine="'+p.id+'" '+((reason||"").trim()?"":"disabled")+'>⚠ Quarantine pack</button></div>';
+          } else {
+            html += '<div class="btn-row"><button class="btn btn-ghost" data-pack-cancel="'+p.id+'">Cancel</button>'+
+              '<button class="btn btn-success" data-pack-release="'+p.id+'" '+(pouch==="Y"?"":"disabled")+'>🔒 Release pack</button></div>';
+          }
+        } else {
+          html += '<button class="btn btn-primary" data-pack-check="'+p.id+'" style="min-height:44px;">Check &amp; release this pack</button>';
+        }
+      } else if(p.status === "quarantined") {
+        html += '<div style="font-size:13px; color:var(--alert);">'+esc(p.quarantineReason||"")+'</div>';
+      } else {
+        html += summaryRow("Released", fmtTime(p.releaseTime), true);
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function closeDetail(){ state.openLoadId = null; state.confirming = null; detailDraft = {}; state.addingField = null; render(); }
+
+  function bindDetailEvents(){
+    var load = findLoad(state.openLoadId);
+    if(!load) return;
+    document.getElementById("detail-close").onclick = closeDetail;
+    document.getElementById("detail-overlay").onclick = function(e){ if(e.target.id==="detail-overlay") closeDetail(); };
+
+    function openConfirm(name){ state.confirming = name; detailDraft = {}; render(); }
+
+    var btnWasher = document.getElementById("btn-washer-done"); if(btnWasher) btnWasher.onclick = function(){ openConfirm("washer_result"); };
+    var btnPack = document.getElementById("btn-pack"); if(btnPack) btnPack.onclick = function(){ openConfirm("pack"); };
+    var btnSter = document.getElementById("btn-ster-done"); if(btnSter) btnSter.onclick = function(){ openConfirm("ster_result"); };
+    var btnCoolSetup = document.getElementById("btn-cool-setup"); if(btnCoolSetup) btnCoolSetup.onclick = function(){ openConfirm("cool_setup"); };
+
+    // washer result form
+    if(state.confirming === "washer_result"){
+      var wrFail = document.getElementById("wr-fail"); if(wrFail) wrFail.onclick = function(){ detailDraft.showFail = true; render(); };
+      var wrPass = document.getElementById("wr-pass"); if(wrPass) wrPass.onclick = function(){
+        updateLoad(load.id, {stage:"ready_to_pack", washerResult:"pass"});
+        state.confirming = null; detailDraft = {};
+      };
+      var wfReason = document.getElementById("wf-reason"); if(wfReason) wfReason.oninput = function(){
+        detailDraft.failReason = wfReason.value;
+        var wfBtn = document.getElementById("wf-quarantine"); if(wfBtn) wfBtn.disabled = !wfReason.value.trim();
+      };
+      var wfBack = document.getElementById("wf-back"); if(wfBack) wfBack.onclick = function(){ detailDraft.showFail=false; render(); };
+      var wfQ = document.getElementById("wf-quarantine"); if(wfQ) wfQ.onclick = function(){
+        updateLoad(load.id, {stage:"quarantined", quarantineReason:"Washer cycle failed: "+detailDraft.failReason, quarantinedAt:new Date().toISOString()});
+        state.confirming = null; detailDraft = {};
+      };
+    }
+
+    // pack form (per-pack indicators + program)
+    if(state.confirming === "pack"){
+      (load.packs||[]).forEach(function(p){
+        bindYnRow("class1-"+p.id, function(v){ detailDraft.packChecks[p.id] = Object.assign({}, detailDraft.packChecks[p.id], {class1:v}); render(); });
+      });
+      bindComboField("pf-program", "sterPrograms", function(v){ detailDraft.program=v; render(); }, render);
+      var pfCancel = document.getElementById("pf-cancel"); if(pfCancel) pfCancel.onclick = function(){ state.confirming=null; detailDraft={}; render(); };
+      var pfSubmit = document.getElementById("pf-submit"); if(pfSubmit) pfSubmit.onclick = function(){
+        var packs = load.packs.map(function(p){
+          var pc = detailDraft.packChecks[p.id] || {};
+          return Object.assign({}, p, {class1: pc.class1});
+        });
+        updateLoad(load.id, {packs: packs, sterProgram:detailDraft.program, stage:"sterilising", sterStart:new Date().toISOString()});
+        state.confirming = null; detailDraft = {};
+      };
+    }
+
+    // steriliser result form
+    if(state.confirming === "ster_result"){
+      var srBatch = document.getElementById("sr-batch"); if(srBatch) srBatch.oninput = function(){ detailDraft.batchNo = srBatch.value; };
+      bindYnRow("params", function(v){ detailDraft.params=v; render(); });
+      var srReason = document.getElementById("sr-reason"); if(srReason) srReason.oninput = function(){
+        detailDraft.sterReason = srReason.value;
+        var srBtn = document.getElementById("sr-quarantine"); if(srBtn) srBtn.disabled = !srReason.value.trim();
+      };
+      var srCancel = document.getElementById("sr-cancel"); if(srCancel) srCancel.onclick = function(){ state.confirming=null; detailDraft={}; render(); };
+      var srConfirm = document.getElementById("sr-confirm"); if(srConfirm) srConfirm.onclick = function(){
+        updateLoad(load.id, {stage:"cooling", sterResult:"pass", sterId:detailDraft.batchNo});
+        state.confirming = null; detailDraft = {};
+      };
+      var srQ = document.getElementById("sr-quarantine"); if(srQ) srQ.onclick = function(){
+        updateLoad(load.id, {stage:"quarantined", quarantineReason:"Steriliser cycle failed: "+detailDraft.sterReason, quarantinedAt:new Date().toISOString()});
+        state.confirming = null; detailDraft = {};
+      };
+    }
+
+    // cool setup form (shared cooled + releaser, once per load)
+    if(state.confirming === "cool_setup"){
+      var csCooled = document.getElementById("cs-cooled"); if(csCooled) csCooled.onchange = function(){ detailDraft.cooled = csCooled.checked; render(); };
+      bindComboField("cs-releaser", "operators", function(v){ detailDraft.releaser=v; render(); }, render);
+      var csCancel = document.getElementById("cs-cancel"); if(csCancel) csCancel.onclick = function(){ state.confirming=null; detailDraft={}; render(); };
+      var csConfirm = document.getElementById("cs-confirm"); if(csConfirm) csConfirm.onclick = function(){
+        updateLoad(load.id, {stage:"done", releaser: detailDraft.releaser});
+        state.confirming = null; detailDraft = {};
+      };
+    }
+
+    // per-pack release/quarantine, active once stage === "done"
+    if(load.stage === "done"){
+      Array.prototype.forEach.call(document.querySelectorAll("[data-pack-check]"), function(btn){
+        btn.onclick = function(){ detailDraft.packChecking = btn.getAttribute("data-pack-check"); detailDraft.pouchOk = null; detailDraft.packReason = ""; render(); };
+      });
+      Array.prototype.forEach.call(document.querySelectorAll("[data-pack-cancel]"), function(btn){
+        btn.onclick = function(){ detailDraft.packChecking = null; render(); };
+      });
+      if(detailDraft.packChecking){
+        var pid = detailDraft.packChecking;
+        bindYnRow("pouch-"+pid, function(v){ detailDraft.pouchOk = v; render(); });
+        var prReason = document.getElementById("pr-reason"); if(prReason) prReason.oninput = function(){
+          detailDraft.packReason = prReason.value;
+          var prBtn = document.querySelector('[data-pack-quarantine="'+pid+'"]'); if(prBtn) prBtn.disabled = !prReason.value.trim();
+        };
+      }
+      Array.prototype.forEach.call(document.querySelectorAll("[data-pack-release]"), function(btn){
+        btn.onclick = function(){
+          var pid2 = btn.getAttribute("data-pack-release");
+          updatePack(load.id, pid2, {status:"released", pouchOk:"Y", releaser: load.releaser, releaseTime: new Date().toISOString()});
+          detailDraft.packChecking = null;
+        };
+      });
+      Array.prototype.forEach.call(document.querySelectorAll("[data-pack-quarantine]"), function(btn){
+        btn.onclick = function(){
+          var pid3 = btn.getAttribute("data-pack-quarantine");
+          updatePack(load.id, pid3, {status:"quarantined", pouchOk:"N", quarantineReason: detailDraft.packReason});
+          detailDraft.packChecking = null;
+        };
+      });
+    }
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
