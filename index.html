@@ -214,7 +214,8 @@
 
   var DEFAULT_LISTS = {
     instrumentSets: [], washerPrograms: [], operators: [],
-    sterPrograms: ["Universal-Program 134°C wrapped", "Quick-Program S 134°C unwrapped", "Gentle-Program 121°C", "Prion-Program 134°C wrapped"]
+    sterPrograms: ["Universal-Program 134°C wrapped", "Quick-Program S 134°C unwrapped", "Gentle-Program 121°C", "Prion-Program 134°C wrapped"],
+    checkTypes: ["Vacuum Test"]
   };
   var PPE_ITEMS = ["Utility/heavy-duty gloves","Protective eyewear or face shield","Fluid-resistant apron/gown","Closed footwear"];
   var STAGES = [
@@ -271,12 +272,15 @@
   // ---------- state ----------
   var state = {
     loads: [],
+    checks: [],
     lists: Object.assign({}, DEFAULT_LISTS),
     tab: "active",
     openLoadId: null,
     showNew: false,
+    showNewCheck: false,
     search: "",
     exportMonth: currentMonthKey(),
+    checksMonth: currentMonthKey(),
     confirming: null,     // which inline form is open inside the detail sheet
     addingField: null,    // which ComboField is in "add new" mode
   };
@@ -285,6 +289,7 @@
   var loadItemIds = {};   // { "W-20260812-01": 14 }
   var packItemIds = {};   // { "<packUid>": 37 }
   var listItemIds = {};   // { "operators": 3 }
+  var checkItemIds = {};  // { "DC-20260812-1": 8 }
 
   // ---------- Microsoft Graph helpers ----------
   async function getToken(){
@@ -352,13 +357,26 @@
       _itemId: itemId,
     };
   }
+  function checkToFields(c){
+    return {
+      Title: c.id, CheckType: c.checkType||"", CheckDate: c.checkDate||null,
+      Result: c.result||"", Operator: c.operator||"", Notes: c.notes||"",
+    };
+  }
+  function fieldsToCheck(f, itemId){
+    return {
+      id: f.Title, checkType: f.CheckType, checkDate: f.CheckDate,
+      result: f.Result, operator: f.Operator, notes: f.Notes, _itemId: itemId,
+    };
+  }
 
   async function fetchAllData(){
     var loadsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items?expand=fields&$top=500");
     var packsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items?expand=fields&$top=1000");
     var listsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLists/items?expand=fields&$top=100");
+    var checksRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackDailyChecks/items?expand=fields&$top=1000");
 
-    loadItemIds = {}; packItemIds = {}; listItemIds = {};
+    loadItemIds = {}; packItemIds = {}; listItemIds = {}; checkItemIds = {};
     var loadsById = {};
     (loadsRes.value||[]).forEach(function(item){
       var l = fieldsToLoad(item.fields, item.id);
@@ -376,9 +394,22 @@
       listItemIds[cat] = item.id;
       try { listsObj[cat] = JSON.parse(item.fields.Values || "[]"); } catch(e){ listsObj[cat] = []; }
     });
+    var checksArr = (checksRes.value||[]).map(function(item){
+      var c = fieldsToCheck(item.fields, item.id);
+      checkItemIds[c.id] = item.id;
+      return c;
+    });
 
     state.loads = Object.values(loadsById).sort(function(a,b){ return (b.createdAt||"").localeCompare(a.createdAt||""); });
+    state.checks = checksArr.sort(function(a,b){ return (b.checkDate||"").localeCompare(a.checkDate||""); });
     state.lists = listsObj;
+  }
+
+  async function createCheckRemote(check){
+    var res = await graphFetch("/sites/"+siteId+"/lists/SteriTrackDailyChecks/items", {
+      method: "POST", body: JSON.stringify({fields: checkToFields(check)}),
+    });
+    checkItemIds[check.id] = res.id;
   }
 
   async function createLoadRemote(load){
@@ -471,6 +502,11 @@
     var todays = state.loads.filter(function(l){ return l.id.indexOf(stamp) !== -1; });
     return "W-" + stamp + "-" + String(todays.length+1).padStart(2,"0");
   }
+  function nextCheckId(){
+    var stamp = todayStamp();
+    var todays = state.checks.filter(function(c){ return c.id.indexOf(stamp) !== -1; });
+    return "DC-" + stamp + "-" + String(todays.length+1);
+  }
 
   // ---------- render ----------
   var root = document.getElementById("app");
@@ -492,6 +528,12 @@
     html += '<div class="content">';
     if(state.tab === "active"){
       html += active.length === 0 ? emptyStateHTML() : active.map(function(l){return cardHTML(l);}).join("");
+    } else if(state.tab === "checks"){
+      html += checksControlsHTML();
+      var checksThisMonth = state.checks.filter(function(c){ return monthKey(c.checkDate) === state.checksMonth; });
+      html += checksThisMonth.length === 0
+        ? '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No daily checks recorded for this month.</div>'
+        : checksThisMonth.map(checkCardHTML).join("");
     } else {
       html += historyControlsHTML();
       var q = state.search.toLowerCase();
@@ -515,15 +557,18 @@
 
     var overlayHost = document.createElement("div");
     if(state.showNew) overlayHost.innerHTML = newLoadSheetHTML();
+    else if(state.showNewCheck) overlayHost.innerHTML = newCheckSheetHTML();
     else if(state.openLoadId) overlayHost.innerHTML = loadDetailHTML(findLoad(state.openLoadId));
     while(overlayHost.firstChild) root.appendChild(overlayHost.firstChild);
 
     if(state.showNew) bindNewLoadEvents();
+    if(state.showNewCheck) bindNewCheckEvents();
     if(state.openLoadId) bindDetailEvents();
   }
 
   function headerHTML(activeCount){
     var name = activeAccount ? (activeAccount.name || activeAccount.username) : "";
+    var newLabel = state.tab === "checks" ? "+ New check" : "+ New load";
     return ''+
     '<div class="header">'+
       '<div class="header-row">'+
@@ -531,11 +576,12 @@
           '<div class="title display" id="sync-title">SteriTrack <span class="sync-dot '+syncStatus+'" id="sync-dot" title="'+syncStatus+'"></span></div>'+
           '<div class="signed-in-as">'+esc(name)+' · <button class="signout-link" id="btn-signout">Sign out</button></div>'+
         '</div>'+
-        '<button class="btn-new" id="btn-new-load">+ New load</button>'+
+        '<button class="btn-new" id="btn-new-load">'+newLabel+'</button>'+
       '</div>'+
       '<div class="tabs">'+
         '<button class="tab '+(state.tab==="active"?"active":"")+'" data-tab="active">In progress ('+activeCount+')</button>'+
         '<button class="tab '+(state.tab==="history"?"active":"")+'" data-tab="history">History</button>'+
+        '<button class="tab '+(state.tab==="checks"?"active":"")+'" data-tab="checks">Daily Checks</button>'+
       '</div>'+
     '</div>';
   }
@@ -544,7 +590,10 @@
     if(dot){ dot.className = "sync-dot " + syncStatus; dot.title = syncStatus; }
   }
   function bindHeaderEvents(){
-    document.getElementById("btn-new-load").onclick = function(){ state.showNew = true; render(); };
+    document.getElementById("btn-new-load").onclick = function(){
+      if(state.tab === "checks"){ state.showNewCheck = true; } else { state.showNew = true; }
+      render();
+    };
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(btn){
       btn.onclick = function(){ state.tab = btn.getAttribute("data-tab"); render(); };
     });
@@ -629,6 +678,12 @@
     Array.prototype.forEach.call(document.querySelectorAll("[data-open]"), function(btn){
       btn.onclick = function(){ state.openLoadId = btn.getAttribute("data-open"); state.confirming = null; render(); };
     });
+    var checksMonthInput = document.getElementById("checks-month-input");
+    if(checksMonthInput) checksMonthInput.onchange = function(){ state.checksMonth = checksMonthInput.value; render(); };
+    var checksExcelBtn = document.getElementById("btn-export-checks-excel");
+    if(checksExcelBtn) checksExcelBtn.onclick = exportChecksExcel;
+    var checksPdfBtn = document.getElementById("btn-export-checks-pdf");
+    if(checksPdfBtn) checksPdfBtn.onclick = exportChecksPdf;
   }
 
   // Builds the row set for the currently-selected export month, one row per pack
@@ -686,6 +741,105 @@
     window.print();
   }
 
+  // ---------- Daily Checks (e.g. vacuum/leak test) ----------
+  function checksControlsHTML(){
+    return '<div class="row-gap">'+
+      '<input type="month" class="month-input" id="checks-month-input" value="'+esc(state.checksMonth)+'">'+
+    '</div>'+
+    '<div class="export-row" style="margin-bottom:12px;">'+
+      '<button class="btn-export" id="btn-export-checks-excel">📊 Export Excel</button>'+
+      '<button class="btn-export" id="btn-export-checks-pdf">🖨 Export PDF</button>'+
+    '</div>';
+  }
+  function checkCardHTML(c){
+    var pass = c.result === "Pass";
+    return '<div class="card">'+
+      '<div class="card-top"><div class="card-id mono">'+esc(c.id)+'</div>'+
+      '<span class="badge badge-'+(pass?"sterile":"alert")+'">'+esc(c.result)+'</span></div>'+
+      '<div class="card-contents">'+esc(c.checkType)+'</div>'+
+      '<div class="card-meta"><span>👤 '+esc(c.operator||"—")+'</span><span>🕒 '+fmtTime(c.checkDate)+'</span></div>'+
+      (c.notes ? '<div style="font-size:13px; color:var(--alert); margin-top:8px;">'+esc(c.notes)+'</div>' : '')+
+    '</div>';
+  }
+  function checksMonthExportRows(){
+    return state.checks
+      .filter(function(c){ return monthKey(c.checkDate) === state.checksMonth; })
+      .map(function(c){ return {id:c.id, type:c.checkType, result:c.result, operator:c.operator, when:fmtTime(c.checkDate), notes:c.notes||""}; });
+  }
+  function exportChecksExcel(){
+    var rows = checksMonthExportRows();
+    var headers = ["Check ID","Check Type","Result","Operator","Date/Time","Notes"];
+    var data = [headers].concat(rows.map(function(r){ return [r.id, r.type, r.result, r.operator, r.when, r.notes]; }));
+    var ws = XLSX.utils.aoa_to_sheet(data);
+    ws["!cols"] = [{wch:18},{wch:16},{wch:10},{wch:16},{wch:16},{wch:30}];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Daily Checks");
+    XLSX.writeFile(wb, "MoleSpot-SteriTrack-DailyChecks-"+state.checksMonth+".xlsx");
+  }
+  function exportChecksPdf(){
+    var rows = checksMonthExportRows();
+    var monthLabel = new Date(state.checksMonth+"-01").toLocaleDateString("en-AU", {month:"long", year:"numeric"});
+    var html = '<h1>MoleSpot Skin Cancer Clinic — SteriTrack Daily Checks</h1>'+
+      '<div class="pr-sub">'+esc(monthLabel)+' · Generated '+fmtTime(new Date().toISOString())+'</div>'+
+      '<div class="pr-summary">'+rows.length+' check'+(rows.length===1?"":"s")+' this month.</div>'+
+      '<table><thead><tr><th>Check ID</th><th>Check Type</th><th>Result</th><th>Operator</th><th>Date/Time</th><th>Notes</th></tr></thead><tbody>';
+    if(rows.length === 0){
+      html += '<tr><td colspan="6" style="text-align:center; color:#777;">No checks for this month.</td></tr>';
+    } else {
+      rows.forEach(function(r){
+        html += '<tr><td>'+esc(r.id)+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.result)+'</td><td>'+esc(r.operator)+'</td><td>'+esc(r.when)+'</td><td>'+esc(r.notes)+'</td></tr>';
+      });
+    }
+    html += '</tbody></table>';
+    document.getElementById("print-report").innerHTML = html;
+    window.print();
+  }
+  function newCheckSheetHTML(){
+    var d = newCheckDraft;
+    var needsNotes = d.result === "Fail";
+    var canSave = d.date && d.checkType && d.result && d.operator && (!needsNotes || (d.notes||"").trim());
+    return '<div class="overlay" id="new-check-overlay"><div class="sheet">'+
+      '<div class="sheet-header"><div class="sheet-title display">New daily check</div><button class="sheet-close" id="new-check-close">✕</button></div>'+
+      '<div class="sheet-body">'+
+        '<div class="field"><span class="field-label">Date</span><input type="date" class="input" id="nc-date" value="'+esc(d.date)+'"></div>'+
+        comboFieldHTML("nc-type", "Check type", d.checkType, state.lists.checkTypes, "Select check type…")+
+        '<div class="field"><span class="field-label">Result</span>'+ynRowHTML("nc-result", d.result, ["Pass","Fail"])+'</div>'+
+        comboFieldHTML("nc-operator", "Operator", d.operator, state.lists.operators, "Select your name…")+
+        (needsNotes ? '<div class="field"><span class="field-label">Notes (required on a failed check)</span><input class="input" id="nc-notes" value="'+esc(d.notes||"")+'"></div>' : '')+
+      '</div>'+
+      '<div class="sheet-footer"><button class="btn btn-primary" id="new-check-save" '+(canSave?"":"disabled")+'>Save check</button></div>'+
+    '</div></div>';
+  }
+  var newCheckDraft = { date: currentMonthKey()+"-"+String(new Date().getDate()).padStart(2,"0"), checkType:"", result:null, operator:"", notes:"" };
+  function closeNewCheck(){
+    state.showNewCheck = false;
+    newCheckDraft = { date: currentMonthKey()+"-"+String(new Date().getDate()).padStart(2,"0"), checkType:"", result:null, operator:"", notes:"" };
+    state.addingField = null;
+    render();
+  }
+  function bindNewCheckEvents(){
+    document.getElementById("new-check-close").onclick = closeNewCheck;
+    document.getElementById("new-check-overlay").onclick = function(e){ if(e.target.id==="new-check-overlay") closeNewCheck(); };
+    var dateInput = document.getElementById("nc-date");
+    if(dateInput) dateInput.onchange = function(){ newCheckDraft.date = dateInput.value; render(); };
+    bindComboField("nc-type", "checkTypes", function(v){ newCheckDraft.checkType=v; render(); }, render);
+    bindYnRow("nc-result", function(v){ newCheckDraft.result=v; render(); });
+    bindComboField("nc-operator", "operators", function(v){ newCheckDraft.operator=v; render(); }, render);
+    var notesInput = document.getElementById("nc-notes");
+    if(notesInput) notesInput.oninput = function(){ newCheckDraft.notes = notesInput.value; };
+    var saveBtn = document.getElementById("new-check-save");
+    if(saveBtn) saveBtn.onclick = function(){
+      var check = {
+        id: nextCheckId(), checkType: newCheckDraft.checkType, result: newCheckDraft.result,
+        operator: newCheckDraft.operator, notes: newCheckDraft.notes||"",
+        checkDate: new Date(newCheckDraft.date + "T" + new Date().toTimeString().slice(0,8)).toISOString(),
+      };
+      state.checks = [check].concat(state.checks);
+      closeNewCheck();
+      createCheckRemote(check).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+    };
+  }
+
   // ---------- ComboField (select + add-new) ----------
   function comboFieldHTML(id, label, value, options, placeholder){
     if(state.addingField === id){
@@ -730,8 +884,9 @@
 
   function ynRowHTML(name, value, options){
     options = options || ["Y","N"];
+    var negatives = {"N":true, "Fail":true};
     return '<div class="yn-row">' + options.map(function(o){
-      var cls = value===o ? (o==="N" ? "sel-neg" : "sel-pos") : "";
+      var cls = value===o ? (negatives[o] ? "sel-neg" : "sel-pos") : "";
       return '<button class="yn-btn '+cls+'" data-yn="'+name+'" data-val="'+o+'">'+o+'</button>';
     }).join("") + '</div>';
   }
