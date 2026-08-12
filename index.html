@@ -9,6 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="SteriTrack">
 <meta name="mobile-web-app-capable" content="yes">
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
     --ink:#1C1E21; --inkSoft:#33363B; --sub:#5B6066; --faint:#9AA0A6;
@@ -161,10 +162,28 @@
   .sync-dot.pending{background:#E0A800;}
   .signed-in-as{font-size:11px; color:var(--faint); margin-top:2px;}
   .signout-link{font-size:11px; color:var(--faint); text-decoration:underline; background:none; border:none; padding:0;}
+
+  /* month filter + export row */
+  .export-row{display:flex; gap:8px; flex-wrap:wrap;}
+  .month-input{min-height:46px; padding:0 12px; border-radius:10px; border:1px solid var(--lineStrong); background:var(--white); font-size:14px; color:var(--ink);}
+
+  /* printable report — hidden on screen, shown only when printing */
+  #print-report{display:none;}
+  @media print {
+    body > *:not(#print-report){display:none !important;}
+    #print-report{display:block !important; padding:24px; font-family:-apple-system,sans-serif; color:#111;}
+    #print-report h1{font-size:20px; margin:0 0 4px;}
+    #print-report .pr-sub{font-size:12px; color:#555; margin-bottom:18px;}
+    #print-report table{width:100%; border-collapse:collapse; font-size:11px;}
+    #print-report th, #print-report td{border:1px solid #999; padding:5px 7px; text-align:left;}
+    #print-report th{background:#eee;}
+    #print-report .pr-summary{font-size:12px; margin-bottom:14px;}
+  }
 </style>
 </head>
 <body>
 <div id="app"></div>
+<div id="print-report"></div>
 
 <script>
 (function(){
@@ -257,6 +276,7 @@
     openLoadId: null,
     showNew: false,
     search: "",
+    exportMonth: currentMonthKey(),
     confirming: null,     // which inline form is open inside the detail sheet
     addingField: null,    // which ComboField is in "add new" mode
   };
@@ -439,6 +459,14 @@
   // ---------- render ----------
   var root = document.getElementById("app");
 
+  function monthKey(iso){ return (iso||"").slice(0,7); } // "YYYY-MM"
+  function currentMonthKey(){ return monthKey(new Date().toISOString()); }
+  function loadRecordDates(l){
+    if(l.stage === "quarantined") return [l.quarantinedAt || l.createdAt];
+    var dates = (l.packs||[]).map(function(p){ return p.releaseTime || l.createdAt; });
+    return dates.length ? dates : [l.createdAt];
+  }
+
   function render(){
     var active = state.loads.filter(isActiveLoad);
     var history = state.loads.filter(function(l){ return !isActiveLoad(l); });
@@ -451,13 +479,16 @@
     } else {
       html += historyControlsHTML();
       var q = state.search.toLowerCase();
-      var filtered = history.filter(function(l){
+      var monthFiltered = history.filter(function(l){
+        return loadRecordDates(l).some(function(d){ return monthKey(d) === state.exportMonth; });
+      });
+      var filtered = monthFiltered.filter(function(l){
         if(!q) return true;
         var packNames = (l.packs||[]).map(function(p){return p.name;}).join(" ");
         return (l.id+" "+(l.sterId||"")+" "+packNames+" "+l.operator).toLowerCase().indexOf(q) !== -1;
       });
       html += filtered.length === 0
-        ? '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No records yet.</div>'
+        ? '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No records for this month'+(q?" matching your search":"")+'.</div>'
         : filtered.map(function(l){ return cardHTML(l, true); }).join("");
     }
     html += '</div>';
@@ -519,9 +550,13 @@
 
   function historyControlsHTML(){
     return '<div class="row-gap">'+
+      '<input type="month" class="month-input" id="month-input" value="'+esc(state.exportMonth)+'">'+
       '<div class="search-wrap"><span class="search-icon">🔍</span>'+
         '<input class="input" id="search-input" placeholder="Search load ID, pack, operator…" value="'+esc(state.search)+'"></div>'+
-      '<button class="btn-export" id="btn-export">⬇ Export</button>'+
+    '</div>'+
+    '<div class="export-row" style="margin-bottom:12px;">'+
+      '<button class="btn-export" id="btn-export-excel">📊 Export Excel</button>'+
+      '<button class="btn-export" id="btn-export-pdf">🖨 Export PDF</button>'+
     '</div>';
   }
 
@@ -567,8 +602,12 @@
   function bindCardEvents(){
     var newBtn = document.getElementById("btn-empty-new");
     if(newBtn) newBtn.onclick = function(){ state.showNew = true; render(); };
-    var exportBtn = document.getElementById("btn-export");
-    if(exportBtn) exportBtn.onclick = exportCsv;
+    var monthInput = document.getElementById("month-input");
+    if(monthInput) monthInput.onchange = function(){ state.exportMonth = monthInput.value; render(); };
+    var exportExcelBtn = document.getElementById("btn-export-excel");
+    if(exportExcelBtn) exportExcelBtn.onclick = exportExcel;
+    var exportPdfBtn = document.getElementById("btn-export-pdf");
+    if(exportPdfBtn) exportPdfBtn.onclick = exportPdf;
     var searchInput = document.getElementById("search-input");
     if(searchInput) searchInput.oninput = function(){ state.search = searchInput.value; render(); searchInput.focus(); searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length; };
     Array.prototype.forEach.call(document.querySelectorAll("[data-open]"), function(btn){
@@ -576,26 +615,59 @@
     });
   }
 
-  function exportCsv(){
+  // Builds the row set for the currently-selected export month, one row per pack
+  // (a load with no packs, e.g. quarantined before packing, gets a single row).
+  function monthExportRows(){
     var history = state.loads.filter(function(l){ return !isActiveLoad(l); });
-    var headers = ["Washer Load ID","Steriliser Batch No.","Pack Name","Pack Status","Operator","Releaser","Release Time"];
-    var rows = [];
-    history.forEach(function(l){
-      (l.packs||[]).forEach(function(p){
-        rows.push([l.id, l.sterId||"", p.name, p.status, l.operator, p.releaser||"", p.releaseTime?fmtTime(p.releaseTime):""]);
-      });
-      if(!(l.packs||[]).length){
-        rows.push([l.id, l.sterId||"", "", l.stage, l.operator, "", ""]);
-      }
+    var monthFiltered = history.filter(function(l){
+      return loadRecordDates(l).some(function(d){ return monthKey(d) === state.exportMonth; });
     });
-    var csv = [headers].concat(rows).map(function(r){
-      return r.map(function(v){ return '"'+String(v||"").replace(/"/g,'""')+'"'; }).join(",");
-    }).join("\n");
-    var blob = new Blob([csv], {type:"text/csv"});
-    var a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "molespot-reprocessing-log-"+todayStamp()+".csv";
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    var rows = [];
+    monthFiltered.forEach(function(l){
+      if(l.stage === "quarantined" && !(l.packs||[]).length){
+        rows.push({loadId:l.id, sterId:l.sterId||"", pack:"—", status:"quarantined (whole load)", operator:l.operator||"", releaser:l.releaser||"", when: fmtTime(l.quarantinedAt||l.createdAt), reason:l.quarantineReason||""});
+        return;
+      }
+      (l.packs||[]).forEach(function(p){
+        if(monthKey(p.releaseTime||l.createdAt) !== state.exportMonth) return;
+        rows.push({loadId:l.id, sterId:l.sterId||"", pack:p.name, status:p.status, operator:l.operator||"", releaser:p.releaser||"", when: p.releaseTime?fmtTime(p.releaseTime):"", reason:p.quarantineReason||""});
+      });
+    });
+    return rows;
+  }
+
+  function exportExcel(){
+    var rows = monthExportRows();
+    var headers = ["Washer Load ID","Steriliser Batch No.","Pack Name","Pack Status","Operator","Releaser","Date/Time","Quarantine Reason"];
+    var data = [headers].concat(rows.map(function(r){
+      return [r.loadId, r.sterId, r.pack, r.status, r.operator, r.releaser, r.when, r.reason];
+    }));
+    var ws = XLSX.utils.aoa_to_sheet(data);
+    ws["!cols"] = [{wch:16},{wch:14},{wch:22},{wch:16},{wch:14},{wch:14},{wch:16},{wch:28}];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Reprocessing Log");
+    XLSX.writeFile(wb, "MoleSpot-SteriTrack-"+state.exportMonth+".xlsx");
+  }
+
+  function exportPdf(){
+    var rows = monthExportRows();
+    var monthLabel = new Date(state.exportMonth+"-01").toLocaleDateString("en-AU", {month:"long", year:"numeric"});
+    var html = '<h1>MoleSpot Skin Cancer Clinic — SteriTrack Reprocessing Log</h1>'+
+      '<div class="pr-sub">'+esc(monthLabel)+' · Generated '+fmtTime(new Date().toISOString())+'</div>'+
+      '<div class="pr-summary">'+rows.length+' record'+(rows.length===1?"":"s")+' this month.</div>'+
+      '<table><thead><tr><th>Washer Load ID</th><th>Steriliser Batch No.</th><th>Pack Name</th><th>Pack Status</th>'+
+      '<th>Operator</th><th>Releaser</th><th>Date/Time</th><th>Quarantine Reason</th></tr></thead><tbody>';
+    if(rows.length === 0){
+      html += '<tr><td colspan="8" style="text-align:center; color:#777;">No records for this month.</td></tr>';
+    } else {
+      rows.forEach(function(r){
+        html += '<tr><td>'+esc(r.loadId)+'</td><td>'+esc(r.sterId)+'</td><td>'+esc(r.pack)+'</td><td>'+esc(r.status)+'</td>'+
+          '<td>'+esc(r.operator)+'</td><td>'+esc(r.releaser)+'</td><td>'+esc(r.when)+'</td><td>'+esc(r.reason)+'</td></tr>';
+      });
+    }
+    html += '</tbody></table>';
+    document.getElementById("print-report").innerHTML = html;
+    window.print();
   }
 
   // ---------- ComboField (select + add-new) ----------
@@ -1033,7 +1105,7 @@
       Array.prototype.forEach.call(document.querySelectorAll("[data-pack-quarantine]"), function(btn){
         btn.onclick = function(){
           var pid3 = btn.getAttribute("data-pack-quarantine");
-          updatePack(load.id, pid3, {status:"quarantined", pouchOk:"N", quarantineReason: detailDraft.packReason});
+          updatePack(load.id, pid3, {status:"quarantined", pouchOk:"N", quarantineReason: detailDraft.packReason, releaseTime: new Date().toISOString()});
           detailDraft.packChecking = null;
         };
       });
