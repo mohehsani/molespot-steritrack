@@ -897,7 +897,7 @@
   }
 
   // ---------- New Load sheet ----------
-  var newLoadDraft = { packs:[], packDraftName:"", operator:"", program:"", ppe:{} };
+  var newLoadDraft = { packs:[], operator:"", program:"", ppe:{} };
   function newLoadSheetHTML(){
     var allPpe = PPE_ITEMS.every(function(p){ return !!newLoadDraft.ppe[p]; });
     var canStart = newLoadDraft.packs.length > 0 && newLoadDraft.operator && newLoadDraft.program && allPpe;
@@ -914,10 +914,7 @@
       '<div class="sheet-body">'+
         '<div class="field"><span class="field-label">Packs in this load</span></div>'+
         chipsHtml+
-        '<div class="pack-add-row">'+
-          comboFieldPlainSelect("nl-pack-select", state.lists.instrumentSets, newLoadDraft.packDraftName)+
-          '<button class="btn btn-ghost" style="flex:none; min-height:46px; padding:0 16px;" id="nl-pack-add">+ Add</button>'+
-        '</div>'+
+        '<div style="margin-bottom:16px;">'+packPickerHTML("nl-pack-picker", state.lists.instrumentSets)+'</div>'+
         comboFieldHTML("nl-operator", "Operator", newLoadDraft.operator, state.lists.operators, "Select your name…")+
         comboFieldHTML("nl-program", "Washer program", newLoadDraft.program, state.lists.washerPrograms, "Select washer program…")+
         '<div class="hint">Sterilising is done in batches, so the patient isn\'t known yet — that link gets recorded later in BP Premier, when each pack is actually opened for use.</div>'+
@@ -926,31 +923,53 @@
       '<div class="sheet-footer"><button class="btn btn-primary" id="new-start" '+(canStart?"":"disabled")+'>💧 Start washer cycle</button></div>'+
     '</div></div>';
   }
-  // A lightweight select (no add-new) used specifically for picking a pack name to add to the chip list —
-  // adding brand-new instrument-set names is still possible via the normal "+ Add new…" combo elsewhere,
-  // so this just needs to offer existing options plus free text.
-  function comboFieldPlainSelect(id, options, value){
-    var opts = '<option value="">Type or pick a pack name…</option>';
-    options.forEach(function(o){ opts += '<option value="'+esc(o)+'" '+(o===value?"selected":"")+'>'+esc(o)+'</option>'; });
-    return '<input class="input" id="'+id+'" list="'+id+'-list" placeholder="e.g. Excision set A" value="'+esc(value||"")+'">'+
-      '<datalist id="'+id+'-list">' + options.map(function(o){ return '<option value="'+esc(o)+'">'; }).join("") + '</datalist>';
+  // A picker for adding items to a growing list (used for "packs in this load").
+  // Uses a plain native <select> (not <datalist>, which iOS Safari doesn't support
+  // for suggestions) — picking an existing option adds it immediately; "+ Add new…"
+  // switches to a text entry that adds the typed value to both the chip list and the
+  // saved instrumentSets list for next time.
+  function packPickerHTML(id, options){
+    if(state.addingField === id){
+      return '<div style="display:flex; gap:8px;">'+
+        '<input class="input" id="'+id+'-newval" placeholder="Type new pack name…" style="flex:1" autofocus>'+
+        '<button class="btn btn-primary" style="flex:none; min-height:46px; padding:0 16px;" id="'+id+'-add-confirm">Add</button>'+
+        '<button class="btn btn-ghost" style="flex:none; min-height:46px; padding:0 14px;" id="'+id+'-add-cancel">Cancel</button>'+
+      '</div>';
+    }
+    var opts = '<option value="" disabled selected>Select instrument set to add…</option>';
+    options.forEach(function(o){ opts += '<option value="'+esc(o)+'">'+esc(o)+'</option>'; });
+    opts += '<option value="__add__">+ Add new…</option>';
+    return '<select class="input" id="'+id+'">'+opts+'</select>';
   }
-  function closeNew(){ state.showNew = false; newLoadDraft = { packs:[], packDraftName:"", operator:"", program:"", ppe:{} }; state.addingField = null; render(); }
+  function bindPackPicker(id){
+    var sel = document.getElementById(id);
+    if(sel){
+      sel.onchange = function(){
+        if(sel.value === "__add__"){ state.addingField = id; render(); return; }
+        if(sel.value){ newLoadDraft.packs = newLoadDraft.packs.concat([sel.value]); render(); }
+      };
+    }
+    var addBtn = document.getElementById(id+"-add-confirm");
+    if(addBtn){
+      addBtn.onclick = function(){
+        var input = document.getElementById(id+"-newval");
+        var v = (input.value||"").trim();
+        if(v){ addToList("instrumentSets", v); newLoadDraft.packs = newLoadDraft.packs.concat([v]); }
+        state.addingField = null;
+        render();
+      };
+    }
+    var cancelBtn = document.getElementById(id+"-add-cancel");
+    if(cancelBtn){
+      cancelBtn.onclick = function(){ state.addingField = null; render(); };
+    }
+  }
+  function closeNew(){ state.showNew = false; newLoadDraft = { packs:[], operator:"", program:"", ppe:{} }; state.addingField = null; render(); }
   function bindNewLoadEvents(){
     document.getElementById("new-close").onclick = closeNew;
     document.getElementById("new-overlay").onclick = function(e){ if(e.target.id==="new-overlay") closeNew(); };
 
-    var packInput = document.getElementById("nl-pack-select");
-    if(packInput) packInput.oninput = function(){ newLoadDraft.packDraftName = packInput.value; };
-    var addPackBtn = document.getElementById("nl-pack-add");
-    if(addPackBtn) addPackBtn.onclick = function(){
-      var name = (newLoadDraft.packDraftName||"").trim();
-      if(!name) return;
-      newLoadDraft.packs = newLoadDraft.packs.concat([name]);
-      addToList("instrumentSets", name);
-      newLoadDraft.packDraftName = "";
-      render();
-    };
+    bindPackPicker("nl-pack-picker");
     Array.prototype.forEach.call(document.querySelectorAll("[data-remove-pack]"), function(btn){
       btn.onclick = function(){
         var i = parseInt(btn.getAttribute("data-remove-pack"), 10);
