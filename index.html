@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="SteriTrack">
 <meta name="mobile-web-app-capable" content="yes">
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
 <style>
   :root{
     --ink:#1C1E21; --inkSoft:#33363B; --sub:#5B6066; --faint:#9AA0A6;
@@ -148,6 +149,18 @@
   .pack-item.pack-quarantined{background:var(--alertBg); border-color:var(--alert);}
   .pack-item-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;}
   .pack-item-name{font-weight:600; font-size:14px;}
+
+  .setup-wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;}
+  .setup-card{width:100%; max-width:440px; background:var(--white); border:1px solid var(--line); border-radius:16px; padding:28px; text-align:center;}
+  .setup-title{font-size:20px; font-weight:700; margin-bottom:6px;}
+  .setup-sub{font-size:13px; color:var(--sub); margin-bottom:20px; line-height:1.5;}
+  .setup-err{font-size:13px; color:var(--alert); margin-bottom:16px; text-align:left; background:var(--alertBg); border:1px solid var(--alertBorder); border-radius:10px; padding:12px;}
+  .sync-dot{width:8px; height:8px; border-radius:50%; display:inline-block; margin-left:6px;}
+  .sync-dot.ok{background:var(--sterile);}
+  .sync-dot.bad{background:var(--alert);}
+  .sync-dot.pending{background:#E0A800;}
+  .signed-in-as{font-size:11px; color:var(--faint); margin-top:2px;}
+  .signout-link{font-size:11px; color:var(--faint); text-decoration:underline; background:none; border:none; padding:0;}
 </style>
 </head>
 <body>
@@ -157,8 +170,29 @@
 (function(){
   "use strict";
 
-  var LOADS_KEY = "steritrack_loads_v1";
-  var LISTS_KEY = "steritrack_lists_v1";
+  // ---------- Microsoft 365 / SharePoint configuration ----------
+  var MSAL_CONFIG = {
+    auth: {
+      clientId: "3da51dfd-c402-4ddd-b05e-0b8cfcdab763",
+      authority: "https://login.microsoftonline.com/57a5a310-7a72-4b1d-8a77-ef7338ab2035",
+      redirectUri: "https://mohehsani.github.io/molespot-steritrack/",
+    },
+    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
+  };
+  var GRAPH_SCOPES = ["Sites.ReadWrite.All"];
+  var SP_HOSTNAME = "molespot.sharepoint.com";
+  var SP_SITE_PATH = "/sites/MoleSpotSkinCancerClinic";
+  var GRAPH_BASE = "https://graph.microsoft.com/v1.0";
+  // SharePoint keeps the internal field name "Title" for the built-in column even after
+  // it's been renamed (LoadId / PackId / Category) in the UI — see note above.
+  var TITLE_FIELD = "Title";
+
+  var msalInstance = null;
+  var activeAccount = null;
+  var siteId = null;
+  var syncStatus = "pending"; // pending | ok | bad
+  var pollTimer = null;
+
   var DEFAULT_LISTS = {
     instrumentSets: [], washerPrograms: [], operators: [],
     sterPrograms: ["Universal-Program 134°C wrapped", "Quick-Program S 134°C unwrapped", "Gentle-Program 121°C", "Prion-Program 134°C wrapped"]
@@ -172,13 +206,6 @@
     {key:"done", label:"Cool & release"},
   ];
 
-  function loadJSON(key, fallback){
-    try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
-    catch(e){ return fallback; }
-  }
-  function saveJSON(key, val){
-    try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){ console.warn("Storage full or unavailable", e); }
-  }
   function uid(){ return Math.random().toString(36).slice(2,9); }
   function todayStamp(){
     var d = new Date();
@@ -224,8 +251,8 @@
 
   // ---------- state ----------
   var state = {
-    loads: loadJSON(LOADS_KEY, []),
-    lists: Object.assign({}, DEFAULT_LISTS, loadJSON(LISTS_KEY, {})),
+    loads: [],
+    lists: Object.assign({}, DEFAULT_LISTS),
     tab: "active",
     openLoadId: null,
     showNew: false,
@@ -233,31 +260,175 @@
     confirming: null,     // which inline form is open inside the detail sheet
     addingField: null,    // which ComboField is in "add new" mode
   };
+  // Maps our own string IDs (LoadId / PackId / list Category) to SharePoint's internal
+  // numeric list-item IDs, since Graph needs the numeric ID to PATCH an existing item.
+  var loadItemIds = {};   // { "W-20260812-01": 14 }
+  var packItemIds = {};   // { "<packUid>": 37 }
+  var listItemIds = {};   // { "operators": 3 }
 
-  function persistLoads(){ saveJSON(LOADS_KEY, state.loads); }
-  function persistLists(){ saveJSON(LISTS_KEY, state.lists); }
+  // ---------- Microsoft Graph helpers ----------
+  async function getToken(){
+    try {
+      var res = await msalInstance.acquireTokenSilent({scopes: GRAPH_SCOPES, account: activeAccount});
+      return res.accessToken;
+    } catch(e){
+      var res2 = await msalInstance.acquireTokenRedirect({scopes: GRAPH_SCOPES});
+      // acquireTokenRedirect navigates away; nothing after this runs.
+      return null;
+    }
+  }
+  async function graphFetch(path, options){
+    options = options || {};
+    var token = await getToken();
+    var headers = Object.assign({
+      "Authorization": "Bearer " + token,
+      "Content-Type": "application/json",
+    }, options.headers || {});
+    var res = await fetch(GRAPH_BASE + path, Object.assign({}, options, {headers: headers}));
+    if(!res.ok){
+      var body = await res.text();
+      throw new Error("Graph " + res.status + ": " + body.slice(0, 300));
+    }
+    if(res.status === 204) return null;
+    return res.json();
+  }
+  async function resolveSiteId(){
+    var data = await graphFetch("/sites/" + SP_HOSTNAME + ":" + SP_SITE_PATH);
+    siteId = data.id;
+  }
+
+  // ---------- Data mapping: app object <-> SharePoint list item fields ----------
+  function loadToFields(l){
+    return {
+      Title: l.id, SterId: l.sterId||"", Stage: l.stage, Operator: l.operator||"",
+      WasherProgram: l.washerProgram||"", WasherStart: l.washerStart||null, WasherResult: l.washerResult||"",
+      SterProgram: l.sterProgram||"", SterStart: l.sterStart||null, SterResult: l.sterResult||"",
+      Releaser: l.releaser||"", QuarantineReason: l.quarantineReason||"", QuarantinedAt: l.quarantinedAt||null,
+    };
+  }
+  function fieldsToLoad(f, itemId){
+    return {
+      id: f.Title, sterId: f.SterId||null, stage: f.Stage, operator: f.Operator,
+      washerProgram: f.WasherProgram, washerStart: f.WasherStart, washerResult: f.WasherResult,
+      sterProgram: f.SterProgram, sterStart: f.SterStart, sterResult: f.SterResult,
+      releaser: f.Releaser, quarantineReason: f.QuarantineReason, quarantinedAt: f.QuarantinedAt,
+      createdAt: f.Created || new Date().toISOString(),
+      packs: [], // filled in after packs are fetched separately
+      _itemId: itemId,
+    };
+  }
+  function packToFields(p, loadId){
+    return {
+      Title: p.id, LoadId: loadId, Name: p.name||"", Class1: p.class1||"",
+      PouchOk: p.pouchOk||"", Status: p.status, QuarantineReason: p.quarantineReason||"", ReleaseTime: p.releaseTime||null,
+    };
+  }
+  function fieldsToPack(f, itemId){
+    return {
+      id: f.Title, loadId: f.LoadId, name: f.Name, class1: f.Class1||null,
+      pouchOk: f.PouchOk||null, status: f.Status, quarantineReason: f.QuarantineReason, releaseTime: f.ReleaseTime,
+      _itemId: itemId,
+    };
+  }
+
+  async function fetchAllData(){
+    var loadsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items?expand=fields&$top=500");
+    var packsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items?expand=fields&$top=1000");
+    var listsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLists/items?expand=fields&$top=100");
+
+    loadItemIds = {}; packItemIds = {}; listItemIds = {};
+    var loadsById = {};
+    (loadsRes.value||[]).forEach(function(item){
+      var l = fieldsToLoad(item.fields, item.id);
+      loadItemIds[l.id] = item.id;
+      loadsById[l.id] = l;
+    });
+    (packsRes.value||[]).forEach(function(item){
+      var p = fieldsToPack(item.fields, item.id);
+      packItemIds[p.id] = item.id;
+      if(loadsById[p.loadId]) loadsById[p.loadId].packs.push(p);
+    });
+    var listsObj = Object.assign({}, DEFAULT_LISTS);
+    (listsRes.value||[]).forEach(function(item){
+      var cat = item.fields.Title;
+      listItemIds[cat] = item.id;
+      try { listsObj[cat] = JSON.parse(item.fields.Values || "[]"); } catch(e){ listsObj[cat] = []; }
+    });
+
+    state.loads = Object.values(loadsById).sort(function(a,b){ return (b.createdAt||"").localeCompare(a.createdAt||""); });
+    state.lists = listsObj;
+  }
+
+  async function createLoadRemote(load){
+    var res = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items", {
+      method: "POST", body: JSON.stringify({fields: loadToFields(load)}),
+    });
+    loadItemIds[load.id] = res.id;
+    for(var i=0;i<load.packs.length;i++){
+      var p = load.packs[i];
+      var pres = await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items", {
+        method: "POST", body: JSON.stringify({fields: packToFields(p, load.id)}),
+      });
+      packItemIds[p.id] = pres.id;
+    }
+  }
+  async function updateLoadRemote(load){
+    var itemId = loadItemIds[load.id];
+    if(!itemId) return;
+    await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items/"+itemId+"/fields", {
+      method: "PATCH", body: JSON.stringify(loadToFields(load)),
+    });
+  }
+  async function updatePackRemote(pack, loadId){
+    var itemId = packItemIds[pack.id];
+    if(!itemId) return;
+    await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items/"+itemId+"/fields", {
+      method: "PATCH", body: JSON.stringify(packToFields(pack, loadId)),
+    });
+  }
+  async function upsertListRemote(category, values){
+    var itemId = listItemIds[category];
+    if(itemId){
+      await graphFetch("/sites/"+siteId+"/lists/SteriTrackLists/items/"+itemId+"/fields", {
+        method: "PATCH", body: JSON.stringify({Values: JSON.stringify(values)}),
+      });
+    } else {
+      var res = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLists/items", {
+        method: "POST", body: JSON.stringify({fields: {Title: category, Values: JSON.stringify(values)}}),
+      });
+      listItemIds[category] = res.id;
+    }
+  }
+
+  function markSync(ok){ syncStatus = ok ? "ok" : "bad"; renderSyncDot(); }
+
   function addToList(cat, val){
     val = (val||"").trim();
     if(!val) return;
     if(state.lists[cat].indexOf(val) === -1){
       state.lists[cat] = state.lists[cat].concat([val]);
-      persistLists();
+      upsertListRemote(cat, state.lists[cat]).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
     }
   }
   function findLoad(id){ return state.loads.filter(function(l){return l.id===id;})[0]; }
   function updateLoad(id, patch){
     state.loads = state.loads.map(function(l){ return l.id===id ? Object.assign({}, l, patch) : l; });
-    persistLoads();
     render();
+    updateLoadRemote(findLoad(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
   }
   function updatePack(loadId, packId, patch){
+    var updatedPack = null;
     state.loads = state.loads.map(function(l){
       if(l.id !== loadId) return l;
-      var packs = l.packs.map(function(p){ return p.id===packId ? Object.assign({}, p, patch) : p; });
+      var packs = l.packs.map(function(p){
+        if(p.id!==packId) return p;
+        updatedPack = Object.assign({}, p, patch);
+        return updatedPack;
+      });
       return Object.assign({}, l, {packs: packs});
     });
-    persistLoads();
     render();
+    if(updatedPack) updatePackRemote(updatedPack, loadId).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
   }
   function nextLoadId(){
     var stamp = todayStamp();
@@ -305,10 +476,14 @@
   }
 
   function headerHTML(activeCount){
+    var name = activeAccount ? (activeAccount.name || activeAccount.username) : "";
     return ''+
     '<div class="header">'+
       '<div class="header-row">'+
-        '<div><div class="eyebrow">MoleSpot Skin Cancer Clinic</div><div class="title display">SteriTrack</div></div>'+
+        '<div><div class="eyebrow">MoleSpot Skin Cancer Clinic</div>'+
+          '<div class="title display" id="sync-title">SteriTrack <span class="sync-dot '+syncStatus+'" id="sync-dot" title="'+syncStatus+'"></span></div>'+
+          '<div class="signed-in-as">'+esc(name)+' · <button class="signout-link" id="btn-signout">Sign out</button></div>'+
+        '</div>'+
         '<button class="btn-new" id="btn-new-load">+ New load</button>'+
       '</div>'+
       '<div class="tabs">'+
@@ -317,11 +492,20 @@
       '</div>'+
     '</div>';
   }
+  function renderSyncDot(){
+    var dot = document.getElementById("sync-dot");
+    if(dot){ dot.className = "sync-dot " + syncStatus; dot.title = syncStatus; }
+  }
   function bindHeaderEvents(){
     document.getElementById("btn-new-load").onclick = function(){ state.showNew = true; render(); };
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(btn){
       btn.onclick = function(){ state.tab = btn.getAttribute("data-tab"); render(); };
     });
+    var signoutBtn = document.getElementById("btn-signout");
+    if(signoutBtn) signoutBtn.onclick = function(){
+      stopPolling();
+      msalInstance.logoutRedirect({account: activeAccount});
+    };
   }
 
   function emptyStateHTML(){
@@ -547,9 +731,9 @@
         }),
       };
       state.loads = [load].concat(state.loads);
-      persistLoads();
       state.openLoadId = load.id;
       closeNew();
+      createLoadRemote(load).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
     };
   }
 
@@ -856,7 +1040,78 @@
     }
   }
 
-  render();
+  // ---------- Setup / connection screens ----------
+  function connectingScreenHTML(msg){
+    return '<div class="setup-wrap"><div class="setup-card">'+
+      '<div class="setup-title display">Connecting…</div>'+
+      '<div class="setup-sub">'+esc(msg||"Signing in and loading data from SharePoint.")+'</div>'+
+    '</div></div>';
+  }
+  function errorScreenHTML(err){
+    return '<div class="setup-wrap"><div class="setup-card">'+
+      '<div class="setup-title display">Couldn\'t connect</div>'+
+      '<div class="setup-err">'+esc(err)+'</div>'+
+      '<button class="btn btn-primary" id="retry-btn" style="width:100%;">Try again</button>'+
+    '</div></div>';
+  }
+  function bindErrorScreen(){
+    var btn = document.getElementById("retry-btn");
+    if(btn) btn.onclick = function(){ boot(); };
+  }
+
+  // ---------- Polling refresh (Graph has no live push, so refresh periodically) ----------
+  function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+  function startPolling(){
+    stopPolling();
+    pollTimer = setInterval(function(){
+      // Skip a refresh cycle while the user is actively filling in a form, so we don't
+      // wipe out unsaved input the same way the Supabase version was careful to avoid.
+      if(state.showNew || state.confirming || state.addingField) return;
+      fetchAllData().then(function(){ markSync(true); render(); }).catch(function(e){ console.error(e); markSync(false); });
+    }, 25000);
+  }
+
+  // ---------- Boot ----------
+  async function boot(){
+    root.innerHTML = connectingScreenHTML();
+    try {
+      msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+      await msalInstance.initialize();
+
+      var redirectResult = await msalInstance.handleRedirectPromise();
+      if(redirectResult && redirectResult.account){
+        activeAccount = redirectResult.account;
+      } else {
+        var accounts = msalInstance.getAllAccounts();
+        if(accounts.length > 0){
+          activeAccount = accounts[0];
+        } else {
+          // Not signed in yet — send to Microsoft sign-in. Page navigates away;
+          // execution resumes above (handleRedirectPromise) after returning.
+          await msalInstance.loginRedirect({scopes: GRAPH_SCOPES});
+          return;
+        }
+      }
+      msalInstance.setActiveAccount(activeAccount);
+
+      root.innerHTML = connectingScreenHTML("Connecting to your SharePoint site…");
+      await resolveSiteId();
+
+      root.innerHTML = connectingScreenHTML("Loading loads and packs…");
+      await fetchAllData();
+
+      syncStatus = "ok";
+      render();
+      startPolling();
+    } catch(e){
+      console.error(e);
+      syncStatus = "bad";
+      root.innerHTML = errorScreenHTML(e.message || String(e));
+      bindErrorScreen();
+    }
+  }
+
+  boot();
 })();
 </script>
 </body>
