@@ -340,13 +340,15 @@
   function packToFields(p, loadId){
     return {
       Title: p.id, LoadId: loadId, Name: p.name||"", Class1: p.class1||"",
-      PouchOk: p.pouchOk||"", Status: p.status, QuarantineReason: p.quarantineReason||"", ReleaseTime: p.releaseTime||null,
+      PouchOk: p.pouchOk||"", Status: p.status, QuarantineReason: p.quarantineReason||"",
+      ReleaseTime: p.releaseTime||null, Releaser: p.releaser||"",
     };
   }
   function fieldsToPack(f, itemId){
     return {
       id: f.Title, loadId: f.LoadId, name: f.Name, class1: f.Class1||null,
-      pouchOk: f.PouchOk||null, status: f.Status, quarantineReason: f.QuarantineReason, releaseTime: f.ReleaseTime,
+      pouchOk: f.PouchOk||null, status: f.Status, quarantineReason: f.QuarantineReason,
+      releaseTime: f.ReleaseTime, releaser: f.Releaser||null,
       _itemId: itemId,
     };
   }
@@ -449,6 +451,20 @@
     });
     render();
     if(updatedPack) updatePackRemote(updatedPack, loadId).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+  }
+  // A whole-load quarantine (washer or steriliser cycle failure, before any per-pack
+  // release check ever happens) must also quarantine every pack in it — otherwise those
+  // packs are stuck showing their original "pending" status forever in reports/exports,
+  // even though they were never actually released or used.
+  function quarantineWholeLoad(load, reason){
+    var now = new Date().toISOString();
+    var updatedPacks = (load.packs||[]).map(function(p){
+      return Object.assign({}, p, {status:"quarantined", quarantineReason: reason, releaseTime: now});
+    });
+    updateLoad(load.id, {stage:"quarantined", quarantineReason: reason, quarantinedAt: now, packs: updatedPacks});
+    updatedPacks.forEach(function(p){
+      updatePackRemote(p, load.id).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+    });
   }
   function nextLoadId(){
     var stamp = todayStamp();
@@ -625,12 +641,12 @@
     var rows = [];
     monthFiltered.forEach(function(l){
       if(l.stage === "quarantined" && !(l.packs||[]).length){
-        rows.push({loadId:l.id, sterId:l.sterId||"", pack:"—", status:"quarantined (whole load)", operator:l.operator||"", releaser:l.releaser||"", when: fmtTime(l.quarantinedAt||l.createdAt), reason:l.quarantineReason||""});
+        rows.push({loadId:l.id, sterId:l.sterId||"", pack:"—", status:"quarantined (whole load)", class1:"", operator:l.operator||"", releaser:l.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: fmtTime(l.quarantinedAt||l.createdAt), reason:l.quarantineReason||""});
         return;
       }
       (l.packs||[]).forEach(function(p){
         if(monthKey(p.releaseTime||l.createdAt) !== state.exportMonth) return;
-        rows.push({loadId:l.id, sterId:l.sterId||"", pack:p.name, status:p.status, operator:l.operator||"", releaser:p.releaser||"", when: p.releaseTime?fmtTime(p.releaseTime):"", reason:p.quarantineReason||""});
+        rows.push({loadId:l.id, sterId:l.sterId||"", pack:p.name, status:p.status, class1:p.class1||"", operator:l.operator||"", releaser:p.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: p.releaseTime?fmtTime(p.releaseTime):"", reason:p.quarantineReason||""});
       });
     });
     return rows;
@@ -638,12 +654,12 @@
 
   function exportExcel(){
     var rows = monthExportRows();
-    var headers = ["Washer Load ID","Steriliser Batch No.","Pack Name","Pack Status","Operator","Releaser","Date/Time","Quarantine Reason"];
+    var headers = ["Washer Load ID","Steriliser Batch No.","Pack Name","Pack Status","Class 1 Indicator","Operator","Releaser","Washer Program","Steriliser Program","Date/Time","Quarantine Reason"];
     var data = [headers].concat(rows.map(function(r){
-      return [r.loadId, r.sterId, r.pack, r.status, r.operator, r.releaser, r.when, r.reason];
+      return [r.loadId, r.sterId, r.pack, r.status, r.class1, r.operator, r.releaser, r.washerProgram, r.sterProgram, r.when, r.reason];
     }));
     var ws = XLSX.utils.aoa_to_sheet(data);
-    ws["!cols"] = [{wch:16},{wch:14},{wch:22},{wch:16},{wch:14},{wch:14},{wch:16},{wch:28}];
+    ws["!cols"] = [{wch:16},{wch:14},{wch:22},{wch:16},{wch:12},{wch:14},{wch:14},{wch:22},{wch:22},{wch:16},{wch:28}];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Reprocessing Log");
     XLSX.writeFile(wb, "MoleSpot-SteriTrack-"+state.exportMonth+".xlsx");
@@ -655,14 +671,14 @@
     var html = '<h1>MoleSpot Skin Cancer Clinic — SteriTrack Reprocessing Log</h1>'+
       '<div class="pr-sub">'+esc(monthLabel)+' · Generated '+fmtTime(new Date().toISOString())+'</div>'+
       '<div class="pr-summary">'+rows.length+' record'+(rows.length===1?"":"s")+' this month.</div>'+
-      '<table><thead><tr><th>Washer Load ID</th><th>Steriliser Batch No.</th><th>Pack Name</th><th>Pack Status</th>'+
-      '<th>Operator</th><th>Releaser</th><th>Date/Time</th><th>Quarantine Reason</th></tr></thead><tbody>';
+      '<table><thead><tr><th>Washer Load ID</th><th>Steriliser Batch No.</th><th>Pack Name</th><th>Pack Status</th><th>Class 1</th>'+
+      '<th>Operator</th><th>Releaser</th><th>Washer Program</th><th>Steriliser Program</th><th>Date/Time</th><th>Quarantine Reason</th></tr></thead><tbody>';
     if(rows.length === 0){
-      html += '<tr><td colspan="8" style="text-align:center; color:#777;">No records for this month.</td></tr>';
+      html += '<tr><td colspan="11" style="text-align:center; color:#777;">No records for this month.</td></tr>';
     } else {
       rows.forEach(function(r){
-        html += '<tr><td>'+esc(r.loadId)+'</td><td>'+esc(r.sterId)+'</td><td>'+esc(r.pack)+'</td><td>'+esc(r.status)+'</td>'+
-          '<td>'+esc(r.operator)+'</td><td>'+esc(r.releaser)+'</td><td>'+esc(r.when)+'</td><td>'+esc(r.reason)+'</td></tr>';
+        html += '<tr><td>'+esc(r.loadId)+'</td><td>'+esc(r.sterId)+'</td><td>'+esc(r.pack)+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.class1)+'</td>'+
+          '<td>'+esc(r.operator)+'</td><td>'+esc(r.releaser)+'</td><td>'+esc(r.washerProgram)+'</td><td>'+esc(r.sterProgram)+'</td><td>'+esc(r.when)+'</td><td>'+esc(r.reason)+'</td></tr>';
       });
     }
     html += '</tbody></table>';
@@ -1027,7 +1043,7 @@
       };
       var wfBack = document.getElementById("wf-back"); if(wfBack) wfBack.onclick = function(){ detailDraft.showFail=false; render(); };
       var wfQ = document.getElementById("wf-quarantine"); if(wfQ) wfQ.onclick = function(){
-        updateLoad(load.id, {stage:"quarantined", quarantineReason:"Washer cycle failed: "+detailDraft.failReason, quarantinedAt:new Date().toISOString()});
+        quarantineWholeLoad(load, "Washer cycle failed: "+detailDraft.failReason);
         state.confirming = null; detailDraft = {};
       };
     }
@@ -1063,7 +1079,7 @@
         state.confirming = null; detailDraft = {};
       };
       var srQ = document.getElementById("sr-quarantine"); if(srQ) srQ.onclick = function(){
-        updateLoad(load.id, {stage:"quarantined", quarantineReason:"Steriliser cycle failed: "+detailDraft.sterReason, quarantinedAt:new Date().toISOString()});
+        quarantineWholeLoad(load, "Steriliser cycle failed: "+detailDraft.sterReason);
         state.confirming = null; detailDraft = {};
       };
     }
