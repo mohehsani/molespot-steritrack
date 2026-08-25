@@ -327,6 +327,7 @@
     return {
       Title: l.id, SterId: l.sterId||"", Stage: l.stage, Operator: l.operator||"",
       WasherProgram: l.washerProgram||"", WasherStart: l.washerStart||null, WasherResult: l.washerResult||"",
+      WasherCycleNo: l.washerCycleNo||"",
       SterProgram: l.sterProgram||"", SterStart: l.sterStart||null, SterResult: l.sterResult||"",
       Releaser: l.releaser||"", QuarantineReason: l.quarantineReason||"", QuarantinedAt: l.quarantinedAt||null,
     };
@@ -335,6 +336,7 @@
     return {
       id: f.Title, sterId: f.SterId||null, stage: f.Stage, operator: f.Operator,
       washerProgram: f.WasherProgram, washerStart: f.WasherStart, washerResult: f.WasherResult,
+      washerCycleNo: f.WasherCycleNo||null,
       sterProgram: f.SterProgram, sterStart: f.SterStart, sterResult: f.SterResult,
       releaser: f.Releaser, quarantineReason: f.QuarantineReason, quarantinedAt: f.QuarantinedAt,
       createdAt: f.Created || new Date().toISOString(),
@@ -696,12 +698,12 @@
     var rows = [];
     monthFiltered.forEach(function(l){
       if(l.stage === "quarantined" && !(l.packs||[]).length){
-        rows.push({loadId:l.id, sterId:l.sterId||"", pack:"—", status:"quarantined (whole load)", class1:"", operator:l.operator||"", releaser:l.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: fmtTime(l.quarantinedAt||l.createdAt), reason:l.quarantineReason||""});
+        rows.push({loadId:l.id, washerCycleNo:l.washerCycleNo||"", sterId:l.sterId||"", pack:"—", status:"quarantined (whole load)", class1:"", operator:l.operator||"", releaser:l.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: fmtTime(l.quarantinedAt||l.createdAt), reason:l.quarantineReason||""});
         return;
       }
       (l.packs||[]).forEach(function(p){
         if(monthKey(p.releaseTime||l.createdAt) !== state.exportMonth) return;
-        rows.push({loadId:l.id, sterId:l.sterId||"", pack:p.name, status:p.status, class1:p.class1||"", operator:l.operator||"", releaser:p.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: p.releaseTime?fmtTime(p.releaseTime):"", reason:p.quarantineReason||""});
+        rows.push({loadId:l.id, washerCycleNo:l.washerCycleNo||"", sterId:l.sterId||"", pack:p.name, status:p.status, class1:p.class1||"", operator:l.operator||"", releaser:p.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: p.releaseTime?fmtTime(p.releaseTime):"", reason:p.quarantineReason||""});
       });
     });
     return rows;
@@ -709,12 +711,12 @@
 
   function exportExcel(){
     var rows = monthExportRows();
-    var headers = ["Washer Load ID","Steriliser Batch No.","Pack Name","Pack Status","Class 1 Indicator","Operator","Releaser","Washer Program","Steriliser Program","Date/Time","Quarantine Reason"];
+    var headers = ["Washer Load ID","Washer Cycle No.","Steriliser Batch No.","Pack Name","Pack Status","Class 1 Indicator","Operator","Releaser","Washer Program","Steriliser Program","Date/Time","Quarantine Reason"];
     var data = [headers].concat(rows.map(function(r){
-      return [r.loadId, r.sterId, r.pack, r.status, r.class1, r.operator, r.releaser, r.washerProgram, r.sterProgram, r.when, r.reason];
+      return [r.loadId, r.washerCycleNo, r.sterId, r.pack, r.status, r.class1, r.operator, r.releaser, r.washerProgram, r.sterProgram, r.when, r.reason];
     }));
     var ws = XLSX.utils.aoa_to_sheet(data);
-    ws["!cols"] = [{wch:16},{wch:14},{wch:22},{wch:16},{wch:12},{wch:14},{wch:14},{wch:22},{wch:22},{wch:16},{wch:28}];
+    ws["!cols"] = [{wch:16},{wch:14},{wch:14},{wch:22},{wch:16},{wch:12},{wch:14},{wch:14},{wch:22},{wch:22},{wch:16},{wch:28}];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Reprocessing Log");
     XLSX.writeFile(wb, "MoleSpot-SteriTrack-"+state.exportMonth+".xlsx");
@@ -726,13 +728,13 @@
     var html = '<h1>MoleSpot Skin Cancer Clinic — SteriTrack Reprocessing Log</h1>'+
       '<div class="pr-sub">'+esc(monthLabel)+' · Generated '+fmtTime(new Date().toISOString())+'</div>'+
       '<div class="pr-summary">'+rows.length+' record'+(rows.length===1?"":"s")+' this month.</div>'+
-      '<table><thead><tr><th>Washer Load ID</th><th>Steriliser Batch No.</th><th>Pack Name</th><th>Pack Status</th><th>Class 1</th>'+
+      '<table><thead><tr><th>Washer Load ID</th><th>Washer Cycle No.</th><th>Steriliser Batch No.</th><th>Pack Name</th><th>Pack Status</th><th>Class 1</th>'+
       '<th>Operator</th><th>Releaser</th><th>Washer Program</th><th>Steriliser Program</th><th>Date/Time</th><th>Quarantine Reason</th></tr></thead><tbody>';
     if(rows.length === 0){
-      html += '<tr><td colspan="11" style="text-align:center; color:#777;">No records for this month.</td></tr>';
+      html += '<tr><td colspan="12" style="text-align:center; color:#777;">No records for this month.</td></tr>';
     } else {
       rows.forEach(function(r){
-        html += '<tr><td>'+esc(r.loadId)+'</td><td>'+esc(r.sterId)+'</td><td>'+esc(r.pack)+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.class1)+'</td>'+
+        html += '<tr><td>'+esc(r.loadId)+'</td><td>'+esc(r.washerCycleNo)+'</td><td>'+esc(r.sterId)+'</td><td>'+esc(r.pack)+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.class1)+'</td>'+
           '<td>'+esc(r.operator)+'</td><td>'+esc(r.releaser)+'</td><td>'+esc(r.washerProgram)+'</td><td>'+esc(r.sterProgram)+'</td><td>'+esc(r.when)+'</td><td>'+esc(r.reason)+'</td></tr>';
       });
     }
@@ -1017,7 +1019,7 @@
     // Washer stage
     body += '<div class="stage-block '+(idx>0 && stage!=="quarantined"?"done":"pending")+'">'+
       '<div class="stage-head">💧 Washer-disinfector'+(idx>0 && stage!=="quarantined"?'<span class="check">✓</span>':'')+'</div>'+
-      summaryRow("Program", load.washerProgram, true) + summaryRow("Started", fmtTime(load.washerStart), true);
+      summaryRow("Cycle no.", load.washerCycleNo, true, true) + summaryRow("Program", load.washerProgram, true) + summaryRow("Started", fmtTime(load.washerStart), true);
     if(stage === "washing"){
       body += state.confirming === "washer_result" ? washerResultFormHTML() :
         '<button class="btn btn-primary" id="btn-washer-done">✓ Mark cycle complete</button>';
@@ -1089,9 +1091,14 @@
         '<div class="btn-row"><button class="btn btn-ghost" id="wf-back">Back</button>'+
         '<button class="btn btn-danger" id="wf-quarantine" '+((d.failReason||"").trim()?"":"disabled")+'>⚠ Quarantine load</button></div></div>';
     }
-    return '<div class="btn-row" style="padding-top:8px;">'+
+    var cycleNo = d.washerCycleNo||"";
+    var canPass = cycleNo.trim().length > 0;
+    return '<div style="padding-top:8px;">'+
+      '<div class="field"><span class="field-label">Washer cycle number (read from Tethys H10 display)</span>'+
+      '<input class="input" id="wr-cycleno" value="'+esc(cycleNo)+'" placeholder="e.g. 2"></div>'+
+      '<div class="btn-row">'+
       '<button class="btn btn-danger" id="wr-fail">Cycle failed</button>'+
-      '<button class="btn btn-success" id="wr-pass">✓ Cycle passed</button></div>';
+      '<button class="btn btn-success" id="wr-pass" '+(canPass?"":"disabled")+'>✓ Cycle passed</button></div></div>';
   }
 
   function packFormHTML(load){
@@ -1207,8 +1214,12 @@
     // washer result form
     if(state.confirming === "washer_result"){
       var wrFail = document.getElementById("wr-fail"); if(wrFail) wrFail.onclick = function(){ detailDraft.showFail = true; render(); };
+      var wrCycleNo = document.getElementById("wr-cycleno"); if(wrCycleNo) wrCycleNo.oninput = function(){
+        detailDraft.washerCycleNo = wrCycleNo.value;
+        var wrBtn = document.getElementById("wr-pass"); if(wrBtn) wrBtn.disabled = !wrCycleNo.value.trim();
+      };
       var wrPass = document.getElementById("wr-pass"); if(wrPass) wrPass.onclick = function(){
-        updateLoad(load.id, {stage:"ready_to_pack", washerResult:"pass"});
+        updateLoad(load.id, {stage:"ready_to_pack", washerResult:"pass", washerCycleNo: detailDraft.washerCycleNo});
         state.confirming = null; detailDraft = {};
       };
       var wfReason = document.getElementById("wf-reason"); if(wfReason) wfReason.oninput = function(){
