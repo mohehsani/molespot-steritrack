@@ -125,6 +125,7 @@
   .summary-row{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; font-size:13px;}
   .summary-row .val{font-weight:500; color:var(--ink); text-align:right;}
   .hint{font-size:13px; color:var(--sub); background:#F4F5F6; border-radius:10px; padding:12px; margin-bottom:16px;}
+  .sync-error-banner{background:var(--alertBg); border-bottom:1px solid var(--alertBorder); color:var(--alert); font-size:13px; padding:12px 16px;}
   .warn-text{font-size:13px; color:var(--alert); margin-bottom:8px;}
   .alert-box{background:var(--alertBg); border:1px solid var(--alertBorder); border-radius:10px; padding:14px;
     font-size:14px; color:var(--alert); margin-bottom:16px;}
@@ -272,7 +273,12 @@
     var data = await graphFetch("/sites/" + SP_HOSTNAME + ":" + SP_SITE_PATH);
     siteId = data.id;
   }
-  function markSync(ok){ syncStatus = ok ? "ok" : "bad"; renderSyncDot(); }
+  var lastError = null;
+  function markSync(ok, err){
+    syncStatus = ok ? "ok" : "bad";
+    if(!ok && err){ lastError = (err && err.message) ? err.message : String(err); render(); }
+    else if(ok){ renderSyncDot(); }
+  }
 
   // ---------- Data mapping: app object <-> SharePoint list item fields ----------
   // SteriTrackLoads = WASHER LOADS ONLY now (steriliser fields moved to SteriTrackSterBatches).
@@ -459,7 +465,7 @@
     if(!val) return;
     if(state.lists[cat].indexOf(val) === -1){
       state.lists[cat] = state.lists[cat].concat([val]);
-      upsertListRemote(cat, state.lists[cat]).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+      upsertListRemote(cat, state.lists[cat]).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
     }
   }
   function findLoad(id){ return state.washerLoads.filter(function(l){return l.id===id;})[0]; }
@@ -470,12 +476,12 @@
   function updateWasherLoad(id, patch){
     state.washerLoads = state.washerLoads.map(function(l){ return l.id===id ? Object.assign({}, l, patch) : l; });
     render();
-    updateWasherLoadRemote(findLoad(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+    updateWasherLoadRemote(findLoad(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
   }
   function updateSterBatch(id, patch){
     state.sterBatches = state.sterBatches.map(function(b){ return b.id===id ? Object.assign({}, b, patch) : b; });
     render();
-    updateSterBatchRemote(findBatch(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+    updateSterBatchRemote(findBatch(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
   }
   function updatePack(id, patch){
     var updated = null;
@@ -485,7 +491,7 @@
       return updated;
     });
     render();
-    if(updated) updatePackRemote(updated).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+    if(updated) updatePackRemote(updated).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
   }
   // Whole-load quarantine (washer cycle failure) cascades to every pack washed in it,
   // since none of them can proceed without being reprocessed from the start.
@@ -562,6 +568,13 @@
 
     var html = '';
     html += headerHTML(activeCount);
+    if(syncStatus === "bad" && lastError){
+      html += '<div class="sync-error-banner" id="sync-error-banner">'+
+        '<strong>⚠ Last save failed — nothing lost locally, but this hasn\'t saved to SharePoint yet:</strong><br>'+
+        '<span class="mono" style="font-size:12px; word-break:break-word;">'+esc(lastError)+'</span>'+
+        '<button id="dismiss-error" style="display:block; margin-top:8px; font-size:12px; background:none; border:none; color:var(--alert); text-decoration:underline; padding:0;">Dismiss</button>'+
+      '</div>';
+    }
     html += '<div class="content">';
     if(state.tab === "active"){
       if(activeCount === 0) html += emptyStateHTML();
@@ -645,6 +658,8 @@
       stopPolling();
       msalInstance.logoutRedirect({account: activeAccount});
     };
+    var dismissBtn = document.getElementById("dismiss-error");
+    if(dismissBtn) dismissBtn.onclick = function(){ lastError = null; render(); };
   }
 
   function emptyStateHTML(){
@@ -988,7 +1003,7 @@
       };
       state.checks = [check].concat(state.checks);
       closeNewCheck();
-      createCheckRemote(check).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+      createCheckRemote(check).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
     };
   }
 
@@ -1140,7 +1155,7 @@
       state.packs = state.packs.concat(packs);
       state.openLoadId = load.id;
       closeNew();
-      createWasherLoadRemote(load, packs).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+      createWasherLoadRemote(load, packs).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
     };
   }
 
@@ -1279,10 +1294,10 @@
       state.poolSelection = {};
       state.openBatchId = batch.id;
       closeNewBatch();
-      createSterBatchRemote(batch).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+      createSterBatchRemote(batch).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
       selectedPacks.forEach(function(p){
         var updated = state.packs.filter(function(pp){return pp.id===p.id;})[0];
-        if(updated) updatePackRemote(updated).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+        if(updated) updatePackRemote(updated).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false, e); });
       });
     };
   }
@@ -1481,7 +1496,7 @@
     stopPolling();
     pollTimer = setInterval(function(){
       if(state.showNew || state.showNewBatch || state.confirming || state.addingField) return;
-      fetchAllData().then(function(){ markSync(true); render(); }).catch(function(e){ console.error(e); markSync(false); });
+      fetchAllData().then(function(){ markSync(true); render(); }).catch(function(e){ console.error(e); markSync(false, e); });
     }, 25000);
   }
   async function boot(){
