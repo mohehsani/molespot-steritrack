@@ -1381,8 +1381,11 @@
     var html = '<div style="padding-top:4px;">';
     packs.forEach(function(p){
       var cls = p.status==="released" ? "pack-released" : p.status==="quarantined" ? "pack-quarantined" : "";
+      var load = findLoad(p.washerLoadId);
+      var washerRef = load ? ('Washer '+esc(load.id)+' · Cycle '+esc(load.cycleNo||"—")) : "Washer —";
       html += '<div class="pack-item '+cls+'"><div class="pack-item-head">'+
-        '<span class="pack-item-name">'+esc(p.name)+'</span>'+
+        '<div><span class="pack-item-name">'+esc(p.name)+'</span>'+
+        '<div style="font-family:ui-monospace,\'SF Mono\',Menlo,monospace; font-size:13px; font-weight:600; color:var(--sub); margin-top:2px;">'+washerRef+'</div></div>'+
         '<span class="badge badge-'+(p.status==="released"?"sterile":p.status==="quarantined"?"alert":"neutral")+'">'+esc(p.status==="assigned"?"pending":p.status)+'</span>'+
         '</div>';
       if(p.status === "assigned"){
