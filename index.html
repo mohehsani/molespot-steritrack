@@ -284,15 +284,21 @@
   // SteriTrackLoads = WASHER LOADS ONLY now (steriliser fields moved to SteriTrackSterBatches).
   function washerLoadToFields(l){
     return {
-      Title: l.id, CycleNo: l.cycleNo||"", Program: l.program||"", StartTime: l.startTime||null,
-      Result: l.result||"", Operator: l.operator||"", Stage: l.stage,
+      // Field names below match the SharePoint list's actual internal names, which
+      // are locked at column creation — renaming a column in the SharePoint UI only
+      // changes the display label, never the internal name Graph API reads/writes.
+      // These three predate this app version and were never actually "WasherProgram"
+      // etc. internally despite being renamed; CycleNo is the one column that
+      // genuinely has that internal name.
+      Title: l.id, CycleNo: l.cycleNo||"", WasherProgram: l.program||"", WasherStart: l.startTime||null,
+      WasherResult: l.result||"", Operator: l.operator||"", Stage: l.stage,
       QuarantineReason: l.quarantineReason||"", QuarantinedAt: l.quarantinedAt||null,
     };
   }
   function fieldsToWasherLoad(f, itemId){
     return {
-      id: f.Title, cycleNo: f.CycleNo||null, program: f.Program, startTime: f.StartTime,
-      result: f.Result, operator: f.Operator, stage: f.Stage,
+      id: f.Title, cycleNo: f.CycleNo||null, program: f.WasherProgram, startTime: f.WasherStart,
+      result: f.WasherResult, operator: f.Operator, stage: f.Stage,
       quarantineReason: f.QuarantineReason, quarantinedAt: f.QuarantinedAt,
       createdAt: f.Created || new Date().toISOString(),
       _itemId: itemId,
