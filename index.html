@@ -244,6 +244,25 @@
   function monthKey(iso){ return (iso||"").slice(0,7); }
   function currentMonthKey(){ return monthKey(new Date().toISOString()); }
 
+  // ---------- Pouch label composition (policy Section 8, Steps 4/9) ----------
+  // The MELAG batch number resets daily, so the full physical/BP Premier reference is
+  // always date(ddmmyy)-MELAGbatch-initials-WCwashercycle — composed here so operators
+  // can just copy it onto the pouch rather than piece it together by hand.
+  function ddmmyy(iso){
+    var d = iso ? new Date(iso) : new Date();
+    return String(d.getDate()).padStart(2,"0") + String(d.getMonth()+1).padStart(2,"0") + String(d.getFullYear()).slice(-2);
+  }
+  function initialsOf(name){
+    if(!name) return "??";
+    var parts = name.trim().split(/\s+/).filter(Boolean);
+    return parts.map(function(p){ return p[0].toUpperCase(); }).join("");
+  }
+  function composePackLabel(pack, batch){
+    var load = findLoad(pack.washerLoadId);
+    var who = initialsOf(batch.confirmedBy || "");
+    return ddmmyy(batch.startTime) + "-" + (batch.sterId || "?") + "-" + who + "-WC" + (load && load.cycleNo ? load.cycleNo : "?");
+  }
+
   // ---------- Microsoft Graph helpers ----------
   async function getToken(){
     try {
@@ -308,14 +327,14 @@
   function sterBatchToFields(b){
     return {
       Title: b.id, SterId: b.sterId||"", SterProgram: b.program||"", SterStart: b.startTime||null,
-      SterResult: b.result||"", Stage: b.stage, Releaser: b.releaser||"",
+      SterResult: b.result||"", Stage: b.stage, Releaser: b.releaser||"", ConfirmedBy: b.confirmedBy||"",
       QuarantineReason: b.quarantineReason||"", QuarantinedAt: b.quarantinedAt||null,
     };
   }
   function fieldsToSterBatch(f, itemId){
     return {
       id: f.Title, sterId: f.SterId||null, program: f.SterProgram, startTime: f.SterStart,
-      result: f.SterResult, stage: f.Stage, releaser: f.Releaser,
+      result: f.SterResult, stage: f.Stage, releaser: f.Releaser, confirmedBy: f.ConfirmedBy||null,
       quarantineReason: f.QuarantineReason, quarantinedAt: f.QuarantinedAt,
       createdAt: f.Created || new Date().toISOString(),
       _itemId: itemId,
@@ -1316,6 +1335,17 @@
     body += summaryRow("Program", batch.program);
     body += summaryRow("Started", fmtTime(batch.startTime));
     if(batch.sterId) body += summaryRow("MELAG batch no.", batch.sterId, false, true);
+    if(batch.confirmedBy) body += summaryRow("Confirmed by", batch.confirmedBy);
+    if(batch.sterId && batch.stage !== "quarantined"){
+      body += '<div class="stage-block done"><div class="stage-head">🏷 Pouch labels — copy onto each pouch</div>';
+      packs.forEach(function(p){
+        body += '<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);">'+
+          '<span style="font-size:13px; color:var(--sub);">'+esc(p.name)+'</span>'+
+          '<span class="mono" style="font-size:15px; font-weight:700; color:var(--ink); letter-spacing:0.3px;">'+esc(composePackLabel(p, batch))+'</span>'+
+        '</div>';
+      });
+      body += '</div>';
+    }
     if(batch.stage === "quarantined"){
       body += '<div class="alert-box"><strong>⚠ Batch quarantined</strong><br>'+esc(batch.quarantineReason)+'</div>';
     }
@@ -1345,15 +1375,17 @@
   }
   function sterResultFormHTML(){
     var d = detailDraft;
-    var batchNo = d.batchNo||"", params = d.params||null, reason = d.sterReason||"";
+    var batchNo = d.batchNo||"", params = d.params||null, reason = d.sterReason||"", confirmedBy = d.confirmedBy||"";
     var anyNo = params==="N";
-    var bothOk = params==="Y" && batchNo;
+    var bothOk = params==="Y" && batchNo && confirmedBy;
     var html = '<div style="padding-top:8px;">';
     html += '<div class="field"><span class="field-label">MELAG batch number (read from steriliser display)</span>'+
       '<input class="input" id="sr-batch" value="'+esc(batchNo)+'" placeholder="e.g. 46"></div>';
     html += '<div class="field"><span class="field-label">Time/temp/pressure parameters achieved</span>'+ynRowHTML("params", params)+'</div>';
     if(anyNo){
       html += '<div class="field"><span class="field-label">Reason for failure</span><input class="input" id="sr-reason" value="'+esc(reason)+'"></div>';
+    } else {
+      html += comboFieldHTML("sr-confirmedby", "Confirmed by (for pouch label initials)", confirmedBy, state.lists.operators, "Select your name…");
     }
     html += '<div class="btn-row"><button class="btn btn-ghost" id="sr-cancel">Cancel</button>';
     if(anyNo){
@@ -1427,13 +1459,14 @@
     if(state.confirming === "ster_result"){
       var srBatch = document.getElementById("sr-batch"); if(srBatch) srBatch.oninput = function(){ detailDraft.batchNo = srBatch.value; };
       bindYnRow("params", function(v){ detailDraft.params=v; render(); });
+      bindComboField("sr-confirmedby", "operators", function(v){ detailDraft.confirmedBy=v; render(); }, render);
       var srReason = document.getElementById("sr-reason"); if(srReason) srReason.oninput = function(){
         detailDraft.sterReason = srReason.value;
         var srBtn = document.getElementById("sr-quarantine"); if(srBtn) srBtn.disabled = !srReason.value.trim();
       };
       var srCancel = document.getElementById("sr-cancel"); if(srCancel) srCancel.onclick = function(){ state.confirming=null; detailDraft={}; render(); };
       var srConfirm = document.getElementById("sr-confirm"); if(srConfirm) srConfirm.onclick = function(){
-        updateSterBatch(batch.id, {stage:"cooling", result:"pass", sterId:detailDraft.batchNo});
+        updateSterBatch(batch.id, {stage:"cooling", result:"pass", sterId:detailDraft.batchNo, confirmedBy:detailDraft.confirmedBy});
         state.confirming = null; detailDraft = {};
       };
       var srQ = document.getElementById("sr-quarantine"); if(srQ) srQ.onclick = function(){
