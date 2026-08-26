@@ -184,7 +184,6 @@
 <body>
 <div id="app"></div>
 <div id="print-report"></div>
-
 <script>
 (function(){
   "use strict";
@@ -203,7 +202,7 @@
   var SP_SITE_PATH = "/sites/MoleSpotSkinCancerClinic";
   var GRAPH_BASE = "https://graph.microsoft.com/v1.0";
   // SharePoint keeps the internal field name "Title" for the built-in column even after
-  // it's been renamed (LoadId / PackId / Category) in the UI — see note above.
+  // it's been renamed (LoadId / BatchId / PackId / Category / CheckId) in the UI.
   var TITLE_FIELD = "Title";
 
   var msalInstance = null;
@@ -218,13 +217,6 @@
     checkTypes: ["Vacuum Test", "Washer Disinfector Soil Test (AXCP120)"]
   };
   var PPE_ITEMS = ["Utility/heavy-duty gloves","Protective eyewear or face shield","Fluid-resistant apron/gown","Closed footwear"];
-  var STAGES = [
-    {key:"washing", label:"Washing"},
-    {key:"ready_to_pack", label:"Ready to pack"},
-    {key:"sterilising", label:"Sterilising"},
-    {key:"cooling", label:"Cooling"},
-    {key:"done", label:"Cool & release"},
-  ];
 
   function uid(){ return Math.random().toString(36).slice(2,9); }
   function todayStamp(){
@@ -241,55 +233,8 @@
       return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
     });
   }
-  function stageIdx(key){ for(var i=0;i<STAGES.length;i++) if(STAGES[i].key===key) return i; return -1; }
-
-  // ---------- pack-status helpers ----------
-  function packCounts(load){
-    var packs = load.packs || [];
-    var released = packs.filter(function(p){return p.status==="released";}).length;
-    var quarantined = packs.filter(function(p){return p.status==="quarantined";}).length;
-    var pending = packs.filter(function(p){return p.status==="pending";}).length;
-    return {total: packs.length, released:released, quarantined:quarantined, pending:pending};
-  }
-  function overallStatus(load){
-    if(load.stage === "quarantined") return {label:"Quarantined", tone:"alert"};
-    if(load.stage !== "done"){
-      var s = STAGES.filter(function(x){return x.key===load.stage;})[0];
-      return {label: s ? s.label : load.stage, tone:"neutral"};
-    }
-    var c = packCounts(load);
-    if(c.pending > 0) return {label:"Releasing ("+(c.released+c.quarantined)+"/"+c.total+")", tone:"neutral"};
-    if(c.quarantined === 0) return {label:"Released", tone:"sterile"};
-    if(c.released === 0) return {label:"All quarantined", tone:"alert"};
-    return {label:"Partially released", tone:"alert"};
-  }
-  function isActiveLoad(load){
-    if(load.stage === "quarantined") return false;
-    if(load.stage !== "done") return true;
-    return packCounts(load).pending > 0;
-  }
-
-  // ---------- state ----------
-  var state = {
-    loads: [],
-    checks: [],
-    lists: Object.assign({}, DEFAULT_LISTS),
-    tab: "active",
-    openLoadId: null,
-    showNew: false,
-    showNewCheck: false,
-    search: "",
-    exportMonth: currentMonthKey(),
-    checksMonth: currentMonthKey(),
-    confirming: null,     // which inline form is open inside the detail sheet
-    addingField: null,    // which ComboField is in "add new" mode
-  };
-  // Maps our own string IDs (LoadId / PackId / list Category) to SharePoint's internal
-  // numeric list-item IDs, since Graph needs the numeric ID to PATCH an existing item.
-  var loadItemIds = {};   // { "W-20260812-01": 14 }
-  var packItemIds = {};   // { "<packUid>": 37 }
-  var listItemIds = {};   // { "operators": 3 }
-  var checkItemIds = {};  // { "DC-20260812-1": 8 }
+  function monthKey(iso){ return (iso||"").slice(0,7); }
+  function currentMonthKey(){ return monthKey(new Date().toISOString()); }
 
   // ---------- Microsoft Graph helpers ----------
   async function getToken(){
@@ -298,7 +243,6 @@
       return res.accessToken;
     } catch(e){
       var res2 = await msalInstance.acquireTokenRedirect({scopes: GRAPH_SCOPES});
-      // acquireTokenRedirect navigates away; nothing after this runs.
       return null;
     }
   }
@@ -321,41 +265,56 @@
     var data = await graphFetch("/sites/" + SP_HOSTNAME + ":" + SP_SITE_PATH);
     siteId = data.id;
   }
+  function markSync(ok){ syncStatus = ok ? "ok" : "bad"; renderSyncDot(); }
 
   // ---------- Data mapping: app object <-> SharePoint list item fields ----------
-  function loadToFields(l){
+  // SteriTrackLoads = WASHER LOADS ONLY now (steriliser fields moved to SteriTrackSterBatches).
+  function washerLoadToFields(l){
     return {
-      Title: l.id, SterId: l.sterId||"", Stage: l.stage, Operator: l.operator||"",
-      WasherProgram: l.washerProgram||"", WasherStart: l.washerStart||null, WasherResult: l.washerResult||"",
-      WasherCycleNo: l.washerCycleNo||"",
-      SterProgram: l.sterProgram||"", SterStart: l.sterStart||null, SterResult: l.sterResult||"",
-      Releaser: l.releaser||"", QuarantineReason: l.quarantineReason||"", QuarantinedAt: l.quarantinedAt||null,
+      Title: l.id, CycleNo: l.cycleNo||"", Program: l.program||"", StartTime: l.startTime||null,
+      Result: l.result||"", Operator: l.operator||"", Stage: l.stage,
+      QuarantineReason: l.quarantineReason||"", QuarantinedAt: l.quarantinedAt||null,
     };
   }
-  function fieldsToLoad(f, itemId){
+  function fieldsToWasherLoad(f, itemId){
     return {
-      id: f.Title, sterId: f.SterId||null, stage: f.Stage, operator: f.Operator,
-      washerProgram: f.WasherProgram, washerStart: f.WasherStart, washerResult: f.WasherResult,
-      washerCycleNo: f.WasherCycleNo||null,
-      sterProgram: f.SterProgram, sterStart: f.SterStart, sterResult: f.SterResult,
-      releaser: f.Releaser, quarantineReason: f.QuarantineReason, quarantinedAt: f.QuarantinedAt,
+      id: f.Title, cycleNo: f.CycleNo||null, program: f.Program, startTime: f.StartTime,
+      result: f.Result, operator: f.Operator, stage: f.Stage,
+      quarantineReason: f.QuarantineReason, quarantinedAt: f.QuarantinedAt,
       createdAt: f.Created || new Date().toISOString(),
-      packs: [], // filled in after packs are fetched separately
       _itemId: itemId,
     };
   }
-  function packToFields(p, loadId){
+  // SteriTrackSterBatches (new list)
+  function sterBatchToFields(b){
     return {
-      Title: p.id, LoadId: loadId, Name: p.name||"", Class1: p.class1||"",
-      PouchOk: p.pouchOk||"", Status: p.status, QuarantineReason: p.quarantineReason||"",
-      ReleaseTime: p.releaseTime||null, Releaser: p.releaser||"",
+      Title: b.id, SterId: b.sterId||"", SterProgram: b.program||"", SterStart: b.startTime||null,
+      SterResult: b.result||"", Stage: b.stage, Releaser: b.releaser||"",
+      QuarantineReason: b.quarantineReason||"", QuarantinedAt: b.quarantinedAt||null,
+    };
+  }
+  function fieldsToSterBatch(f, itemId){
+    return {
+      id: f.Title, sterId: f.SterId||null, program: f.SterProgram, startTime: f.SterStart,
+      result: f.SterResult, stage: f.Stage, releaser: f.Releaser,
+      quarantineReason: f.QuarantineReason, quarantinedAt: f.QuarantinedAt,
+      createdAt: f.Created || new Date().toISOString(),
+      _itemId: itemId,
+    };
+  }
+  // SteriTrackPacks — LoadId links to washer load; SterBatchId links to steriliser batch (blank until assigned)
+  function packToFields(p){
+    return {
+      Title: p.id, LoadId: p.washerLoadId||"", SterBatchId: p.sterBatchId||"", Name: p.name||"",
+      Class1: p.class1||"", PouchOk: p.pouchOk||"", Status: p.status,
+      QuarantineReason: p.quarantineReason||"", ReleaseTime: p.releaseTime||null, Releaser: p.releaser||"",
     };
   }
   function fieldsToPack(f, itemId){
     return {
-      id: f.Title, loadId: f.LoadId, name: f.Name, class1: f.Class1||null,
-      pouchOk: f.PouchOk||null, status: f.Status, quarantineReason: f.QuarantineReason,
-      releaseTime: f.ReleaseTime, releaser: f.Releaser||null,
+      id: f.Title, washerLoadId: f.LoadId, sterBatchId: f.SterBatchId||null, name: f.Name,
+      class1: f.Class1||null, pouchOk: f.PouchOk||null, status: f.Status,
+      quarantineReason: f.QuarantineReason, releaseTime: f.ReleaseTime, releaser: f.Releaser||null,
       _itemId: itemId,
     };
   }
@@ -372,23 +331,42 @@
     };
   }
 
+  // ---------- state ----------
+  var state = {
+    washerLoads: [], sterBatches: [], packs: [], checks: [],
+    lists: Object.assign({}, DEFAULT_LISTS),
+    tab: "active",           // active | pool | history | checks
+    openLoadId: null, openBatchId: null,
+    showNew: false, showNewCheck: false, showNewBatch: false,
+    search: "",
+    exportMonth: currentMonthKey(), checksMonth: currentMonthKey(),
+    confirming: null, addingField: null,
+    poolSelection: {},       // { packId: true }
+  };
+  var loadItemIds = {}, batchItemIds = {}, packItemIds = {}, listItemIds = {}, checkItemIds = {};
+
   async function fetchAllData(){
     var loadsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items?expand=fields&$top=500");
+    var batchesRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackSterBatches/items?expand=fields&$top=500");
     var packsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items?expand=fields&$top=1000");
     var listsRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLists/items?expand=fields&$top=100");
     var checksRes = await graphFetch("/sites/"+siteId+"/lists/SteriTrackDailyChecks/items?expand=fields&$top=1000");
 
-    loadItemIds = {}; packItemIds = {}; listItemIds = {}; checkItemIds = {};
-    var loadsById = {};
-    (loadsRes.value||[]).forEach(function(item){
-      var l = fieldsToLoad(item.fields, item.id);
+    loadItemIds = {}; batchItemIds = {}; packItemIds = {}; listItemIds = {}; checkItemIds = {};
+    var loads = (loadsRes.value||[]).map(function(item){
+      var l = fieldsToWasherLoad(item.fields, item.id);
       loadItemIds[l.id] = item.id;
-      loadsById[l.id] = l;
+      return l;
     });
-    (packsRes.value||[]).forEach(function(item){
+    var batches = (batchesRes.value||[]).map(function(item){
+      var b = fieldsToSterBatch(item.fields, item.id);
+      batchItemIds[b.id] = item.id;
+      return b;
+    });
+    var packs = (packsRes.value||[]).map(function(item){
       var p = fieldsToPack(item.fields, item.id);
       packItemIds[p.id] = item.id;
-      if(loadsById[p.loadId]) loadsById[p.loadId].packs.push(p);
+      return p;
     });
     var listsObj = Object.assign({}, DEFAULT_LISTS);
     (listsRes.value||[]).forEach(function(item){
@@ -396,50 +374,64 @@
       listItemIds[cat] = item.id;
       try { listsObj[cat] = JSON.parse(item.fields.Values || "[]"); } catch(e){ listsObj[cat] = []; }
     });
-    var checksArr = (checksRes.value||[]).map(function(item){
+    var checks = (checksRes.value||[]).map(function(item){
       var c = fieldsToCheck(item.fields, item.id);
       checkItemIds[c.id] = item.id;
       return c;
     });
 
-    state.loads = Object.values(loadsById).sort(function(a,b){ return (b.createdAt||"").localeCompare(a.createdAt||""); });
-    state.checks = checksArr.sort(function(a,b){ return (b.checkDate||"").localeCompare(a.checkDate||""); });
+    state.washerLoads = loads.sort(function(a,b){ return (b.createdAt||"").localeCompare(a.createdAt||""); });
+    state.sterBatches = batches.sort(function(a,b){ return (b.createdAt||"").localeCompare(a.createdAt||""); });
+    state.packs = packs;
     state.lists = listsObj;
+    state.checks = checks.sort(function(a,b){ return (b.checkDate||"").localeCompare(a.checkDate||""); });
   }
 
+  async function createWasherLoadRemote(load, packs){
+    var res = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items", {
+      method: "POST", body: JSON.stringify({fields: washerLoadToFields(load)}),
+    });
+    loadItemIds[load.id] = res.id;
+    for(var i=0;i<packs.length;i++){
+      var p = packs[i];
+      var pres = await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items", {
+        method: "POST", body: JSON.stringify({fields: packToFields(p)}),
+      });
+      packItemIds[p.id] = pres.id;
+    }
+  }
+  async function updateWasherLoadRemote(load){
+    var itemId = loadItemIds[load.id];
+    if(!itemId) return;
+    await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items/"+itemId+"/fields", {
+      method: "PATCH", body: JSON.stringify(washerLoadToFields(load)),
+    });
+  }
+  async function createSterBatchRemote(batch){
+    var res = await graphFetch("/sites/"+siteId+"/lists/SteriTrackSterBatches/items", {
+      method: "POST", body: JSON.stringify({fields: sterBatchToFields(batch)}),
+    });
+    batchItemIds[batch.id] = res.id;
+  }
+  async function updateSterBatchRemote(batch){
+    var itemId = batchItemIds[batch.id];
+    if(!itemId) return;
+    await graphFetch("/sites/"+siteId+"/lists/SteriTrackSterBatches/items/"+itemId+"/fields", {
+      method: "PATCH", body: JSON.stringify(sterBatchToFields(batch)),
+    });
+  }
+  async function updatePackRemote(pack){
+    var itemId = packItemIds[pack.id];
+    if(!itemId) return;
+    await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items/"+itemId+"/fields", {
+      method: "PATCH", body: JSON.stringify(packToFields(pack)),
+    });
+  }
   async function createCheckRemote(check){
     var res = await graphFetch("/sites/"+siteId+"/lists/SteriTrackDailyChecks/items", {
       method: "POST", body: JSON.stringify({fields: checkToFields(check)}),
     });
     checkItemIds[check.id] = res.id;
-  }
-
-  async function createLoadRemote(load){
-    var res = await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items", {
-      method: "POST", body: JSON.stringify({fields: loadToFields(load)}),
-    });
-    loadItemIds[load.id] = res.id;
-    for(var i=0;i<load.packs.length;i++){
-      var p = load.packs[i];
-      var pres = await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items", {
-        method: "POST", body: JSON.stringify({fields: packToFields(p, load.id)}),
-      });
-      packItemIds[p.id] = pres.id;
-    }
-  }
-  async function updateLoadRemote(load){
-    var itemId = loadItemIds[load.id];
-    if(!itemId) return;
-    await graphFetch("/sites/"+siteId+"/lists/SteriTrackLoads/items/"+itemId+"/fields", {
-      method: "PATCH", body: JSON.stringify(loadToFields(load)),
-    });
-  }
-  async function updatePackRemote(pack, loadId){
-    var itemId = packItemIds[pack.id];
-    if(!itemId) return;
-    await graphFetch("/sites/"+siteId+"/lists/SteriTrackPacks/items/"+itemId+"/fields", {
-      method: "PATCH", body: JSON.stringify(packToFields(pack, loadId)),
-    });
   }
   async function upsertListRemote(category, values){
     var itemId = listItemIds[category];
@@ -455,8 +447,6 @@
     }
   }
 
-  function markSync(ok){ syncStatus = ok ? "ok" : "bad"; renderSyncDot(); }
-
   function addToList(cat, val){
     val = (val||"").trim();
     if(!val) return;
@@ -465,44 +455,58 @@
       upsertListRemote(cat, state.lists[cat]).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
     }
   }
-  function findLoad(id){ return state.loads.filter(function(l){return l.id===id;})[0]; }
-  function updateLoad(id, patch){
-    state.loads = state.loads.map(function(l){ return l.id===id ? Object.assign({}, l, patch) : l; });
+  function findLoad(id){ return state.washerLoads.filter(function(l){return l.id===id;})[0]; }
+  function findBatch(id){ return state.sterBatches.filter(function(b){return b.id===id;})[0]; }
+  function packsOf(loadId){ return state.packs.filter(function(p){ return p.washerLoadId===loadId; }); }
+  function packsInBatch(batchId){ return state.packs.filter(function(p){ return p.sterBatchId===batchId; }); }
+
+  function updateWasherLoad(id, patch){
+    state.washerLoads = state.washerLoads.map(function(l){ return l.id===id ? Object.assign({}, l, patch) : l; });
     render();
-    updateLoadRemote(findLoad(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+    updateWasherLoadRemote(findLoad(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
   }
-  function updatePack(loadId, packId, patch){
-    var updatedPack = null;
-    state.loads = state.loads.map(function(l){
-      if(l.id !== loadId) return l;
-      var packs = l.packs.map(function(p){
-        if(p.id!==packId) return p;
-        updatedPack = Object.assign({}, p, patch);
-        return updatedPack;
-      });
-      return Object.assign({}, l, {packs: packs});
+  function updateSterBatch(id, patch){
+    state.sterBatches = state.sterBatches.map(function(b){ return b.id===id ? Object.assign({}, b, patch) : b; });
+    render();
+    updateSterBatchRemote(findBatch(id)).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+  }
+  function updatePack(id, patch){
+    var updated = null;
+    state.packs = state.packs.map(function(p){
+      if(p.id!==id) return p;
+      updated = Object.assign({}, p, patch);
+      return updated;
     });
     render();
-    if(updatedPack) updatePackRemote(updatedPack, loadId).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+    if(updated) updatePackRemote(updated).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
   }
-  // A whole-load quarantine (washer or steriliser cycle failure, before any per-pack
-  // release check ever happens) must also quarantine every pack in it — otherwise those
-  // packs are stuck showing their original "pending" status forever in reports/exports,
-  // even though they were never actually released or used.
+  // Whole-load quarantine (washer cycle failure) cascades to every pack washed in it,
+  // since none of them can proceed without being reprocessed from the start.
   function quarantineWholeLoad(load, reason){
     var now = new Date().toISOString();
-    var updatedPacks = (load.packs||[]).map(function(p){
-      return Object.assign({}, p, {status:"quarantined", quarantineReason: reason, releaseTime: now});
+    updateWasherLoad(load.id, {stage:"quarantined", quarantineReason: reason, quarantinedAt: now});
+    packsOf(load.id).forEach(function(p){
+      updatePack(p.id, {status:"quarantined", quarantineReason: reason, releaseTime: now});
     });
-    updateLoad(load.id, {stage:"quarantined", quarantineReason: reason, quarantinedAt: now, packs: updatedPacks});
-    updatedPacks.forEach(function(p){
-      updatePackRemote(p, load.id).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+  }
+  // Whole-batch quarantine (steriliser cycle failure) cascades to every pack assigned to it —
+  // these packs may have come from several different washer loads.
+  function quarantineWholeBatch(batch, reason){
+    var now = new Date().toISOString();
+    updateSterBatch(batch.id, {stage:"quarantined", quarantineReason: reason, quarantinedAt: now});
+    packsInBatch(batch.id).forEach(function(p){
+      updatePack(p.id, {status:"quarantined", quarantineReason: reason, releaseTime: now});
     });
   }
   function nextLoadId(){
     var stamp = todayStamp();
-    var todays = state.loads.filter(function(l){ return l.id.indexOf(stamp) !== -1; });
+    var todays = state.washerLoads.filter(function(l){ return l.id.indexOf(stamp) !== -1; });
     return "W-" + stamp + "-" + String(todays.length+1).padStart(2,"0");
+  }
+  function nextBatchId(){
+    var stamp = todayStamp();
+    var todays = state.sterBatches.filter(function(b){ return b.id.indexOf(stamp) !== -1; });
+    return "S-" + stamp + "-" + String(todays.length+1).padStart(2,"0");
   }
   function nextCheckId(){
     var stamp = todayStamp();
@@ -510,26 +514,56 @@
     return "DC-" + stamp + "-" + String(todays.length+1);
   }
 
+  function isActiveLoad(l){ return l.stage === "washing"; }
+  function isActiveBatch(b){
+    if(b.stage === "quarantined") return false;
+    if(b.stage !== "done") return true;
+    return packsInBatch(b.id).some(function(p){ return p.status==="assigned"; });
+  }
+  function poolPacks(){
+    // Packs that have finished washing, aren't quarantined, and haven't yet been
+    // picked up into a steriliser batch — may span several different washer loads.
+    return state.packs.filter(function(p){
+      if(p.sterBatchId || p.status==="quarantined") return false;
+      var load = findLoad(p.washerLoadId);
+      return load && load.stage === "done";
+    });
+  }
+  function batchOverallStatus(b){
+    if(b.stage === "quarantined") return {label:"Quarantined", tone:"alert"};
+    if(b.stage !== "done"){
+      var label = b.stage === "sterilising" ? "Sterilising" : b.stage === "cooling" ? "Cooling" : b.stage;
+      return {label: label, tone:"neutral"};
+    }
+    var packs = packsInBatch(b.id);
+    var released = packs.filter(function(p){return p.status==="released";}).length;
+    var quarantined = packs.filter(function(p){return p.status==="quarantined";}).length;
+    var assigned = packs.filter(function(p){return p.status==="assigned";}).length;
+    if(assigned > 0) return {label:"Releasing ("+(released+quarantined)+"/"+packs.length+")", tone:"neutral"};
+    if(quarantined === 0) return {label:"Released", tone:"sterile"};
+    if(released === 0) return {label:"All quarantined", tone:"alert"};
+    return {label:"Partially released", tone:"alert"};
+  }
+
   // ---------- render ----------
   var root = document.getElementById("app");
 
-  function monthKey(iso){ return (iso||"").slice(0,7); } // "YYYY-MM"
-  function currentMonthKey(){ return monthKey(new Date().toISOString()); }
-  function loadRecordDates(l){
-    if(l.stage === "quarantined") return [l.quarantinedAt || l.createdAt];
-    var dates = (l.packs||[]).map(function(p){ return p.releaseTime || l.createdAt; });
-    return dates.length ? dates : [l.createdAt];
-  }
-
   function render(){
-    var active = state.loads.filter(isActiveLoad);
-    var history = state.loads.filter(function(l){ return !isActiveLoad(l); });
+    var activeLoads = state.washerLoads.filter(isActiveLoad);
+    var activeBatches = state.sterBatches.filter(isActiveBatch);
+    var activeCount = activeLoads.length + activeBatches.length;
 
     var html = '';
-    html += headerHTML(active.length);
+    html += headerHTML(activeCount);
     html += '<div class="content">';
     if(state.tab === "active"){
-      html += active.length === 0 ? emptyStateHTML() : active.map(function(l){return cardHTML(l);}).join("");
+      if(activeCount === 0) html += emptyStateHTML();
+      else {
+        html += activeLoads.map(function(l){ return loadCardHTML(l); }).join("");
+        html += activeBatches.map(function(b){ return batchCardHTML(b); }).join("");
+      }
+    } else if(state.tab === "pool"){
+      html += poolHTML();
     } else if(state.tab === "checks"){
       html += checksControlsHTML();
       var checksThisMonth = state.checks.filter(function(c){ return monthKey(c.checkDate) === state.checksMonth; });
@@ -539,17 +573,11 @@
     } else {
       html += historyControlsHTML();
       var q = state.search.toLowerCase();
-      var monthFiltered = history.filter(function(l){
-        return loadRecordDates(l).some(function(d){ return monthKey(d) === state.exportMonth; });
-      });
-      var filtered = monthFiltered.filter(function(l){
-        if(!q) return true;
-        var packNames = (l.packs||[]).map(function(p){return p.name;}).join(" ");
-        return (l.id+" "+(l.sterId||"")+" "+packNames+" "+l.operator).toLowerCase().indexOf(q) !== -1;
-      });
-      html += filtered.length === 0
+      var rows = monthExportRows();
+      var historyItems = historyCards(q);
+      html += historyItems.length === 0
         ? '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No records for this month'+(q?" matching your search":"")+'.</div>'
-        : filtered.map(function(l){ return cardHTML(l, true); }).join("");
+        : historyItems.join("");
     }
     html += '</div>';
 
@@ -559,18 +587,23 @@
 
     var overlayHost = document.createElement("div");
     if(state.showNew) overlayHost.innerHTML = newLoadSheetHTML();
+    else if(state.showNewBatch) overlayHost.innerHTML = newBatchSheetHTML();
     else if(state.showNewCheck) overlayHost.innerHTML = newCheckSheetHTML();
     else if(state.openLoadId) overlayHost.innerHTML = loadDetailHTML(findLoad(state.openLoadId));
+    else if(state.openBatchId) overlayHost.innerHTML = batchDetailHTML(findBatch(state.openBatchId));
     while(overlayHost.firstChild) root.appendChild(overlayHost.firstChild);
 
     if(state.showNew) bindNewLoadEvents();
+    if(state.showNewBatch) bindNewBatchEvents();
     if(state.showNewCheck) bindNewCheckEvents();
-    if(state.openLoadId) bindDetailEvents();
+    if(state.openLoadId) bindLoadDetailEvents();
+    if(state.openBatchId) bindBatchDetailEvents();
   }
 
   function headerHTML(activeCount){
     var name = activeAccount ? (activeAccount.name || activeAccount.username) : "";
-    var newLabel = state.tab === "checks" ? "+ New check" : "+ New load";
+    var newLabel = state.tab === "checks" ? "+ New check" : "+ New wash load";
+    var poolCount = poolPacks().length;
     return ''+
     '<div class="header">'+
       '<div class="header-row">'+
@@ -582,6 +615,7 @@
       '</div>'+
       '<div class="tabs">'+
         '<button class="tab '+(state.tab==="active"?"active":"")+'" data-tab="active">In progress ('+activeCount+')</button>'+
+        '<button class="tab '+(state.tab==="pool"?"active":"")+'" data-tab="pool">Ready to sterilise ('+poolCount+')</button>'+
         '<button class="tab '+(state.tab==="history"?"active":"")+'" data-tab="history">History</button>'+
         '<button class="tab '+(state.tab==="checks"?"active":"")+'" data-tab="checks">Daily Checks</button>'+
       '</div>'+
@@ -597,7 +631,7 @@
       render();
     };
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(btn){
-      btn.onclick = function(){ state.tab = btn.getAttribute("data-tab"); render(); };
+      btn.onclick = function(){ state.tab = btn.getAttribute("data-tab"); state.poolSelection = {}; render(); };
     });
     var signoutBtn = document.getElementById("btn-signout");
     if(signoutBtn) signoutBtn.onclick = function(){
@@ -609,77 +643,72 @@
   function emptyStateHTML(){
     return '<div class="empty">'+
       '<div class="empty-icon">💧</div>'+
-      '<div class="empty-title display">No loads in progress</div>'+
-      '<div class="empty-sub">Start a new washer load to begin tracking a batch of packs.</div>'+
-      '<button class="btn btn-primary" style="display:inline-flex; flex:none;" id="btn-empty-new">+ Start a load</button>'+
+      '<div class="empty-title display">Nothing in progress</div>'+
+      '<div class="empty-sub">Start a new washer load to begin tracking a batch of instruments.</div>'+
+      '<button class="btn btn-primary" style="display:inline-flex; flex:none;" id="btn-empty-new">+ Start a wash load</button>'+
     '</div>';
   }
 
-  function historyControlsHTML(){
-    return '<div class="row-gap">'+
-      '<input type="month" class="month-input" id="month-input" value="'+esc(state.exportMonth)+'">'+
-      '<div class="search-wrap"><span class="search-icon">🔍</span>'+
-        '<input class="input" id="search-input" placeholder="Search load ID, pack, operator…" value="'+esc(state.search)+'"></div>'+
-    '</div>'+
-    '<div class="export-row" style="margin-bottom:12px;">'+
-      '<button class="btn-export" id="btn-export-excel">📊 Export Excel</button>'+
-      '<button class="btn-export" id="btn-export-pdf">🖨 Export PDF</button>'+
-    '</div>';
-  }
-
-  function railHTML(stage){
-    var idx = stageIdx(stage === "quarantined" ? "washing" : stage);
-    var html = '<div class="rail">';
-    STAGES.forEach(function(s, i){
-      var active = i <= idx && stage !== "quarantined";
-      var isCurrent = s.key === stage;
-      var bg = "#F4F5F6", color = "var(--faint)", border = "var(--line)";
-      if(active){
-        if(s.key==="washing"){ bg="var(--dirty)"; color="#fff"; border="var(--dirty)"; }
-        else if(s.key==="ready_to_pack"||s.key==="sterilising"){ bg="#fff"; color="var(--ink)"; border="var(--lineStrong)"; }
-        else { bg="var(--sterile)"; color="#fff"; border="var(--sterile)"; }
-      }
-      html += '<div class="rail-step" style="background:'+bg+'; color:'+color+'; border-color:'+border+
-        (isCurrent?'; box-shadow:0 0 0 2px #1C1E2122':'')+'">'+s.label+'</div>';
-      if(i<STAGES.length-1) html += '<span class="rail-arrow">›</span>';
-    });
-    html += '</div>';
-    return html;
-  }
-
-  function packSummaryText(load){
-    var names = (load.packs||[]).map(function(p){return p.name;});
-    if(names.length === 0) return "No packs added";
-    if(names.length <= 2) return names.join(", ");
-    return names.slice(0,2).join(", ") + " +" + (names.length-2) + " more";
-  }
-
-  function cardHTML(l, compact){
-    var os = overallStatus(l);
-    var c = packCounts(l);
-    return '<button class="card" data-open="'+l.id+'">'+
-      '<div class="card-top"><div class="card-id mono">'+esc(l.id)+(l.sterId?' → '+esc(l.sterId):'')+'</div>'+
-      '<span class="badge badge-'+os.tone+'">'+esc(os.label)+'</span></div>'+
-      '<div class="card-contents">'+esc(packSummaryText(l))+' <span style="color:var(--faint); font-weight:400;">('+c.total+' pack'+(c.total===1?'':'s')+')</span></div>'+
+  function loadCardHTML(l){
+    var status = l.stage === "quarantined" ? {label:"Quarantined", tone:"alert"} : {label:"Washing", tone:"neutral"};
+    var packs = packsOf(l.id);
+    var names = packs.map(function(p){return p.name;});
+    var summary = names.length===0 ? "No packs added" : names.length<=2 ? names.join(", ") : names.slice(0,2).join(", ")+" +"+(names.length-2)+" more";
+    return '<button class="card" data-open-load="'+l.id+'">'+
+      '<div class="card-top"><div class="card-id mono">💧 '+esc(l.id)+'</div>'+
+      '<span class="badge badge-'+status.tone+'">'+esc(status.label)+'</span></div>'+
+      '<div class="card-contents">'+esc(summary)+' <span style="color:var(--faint); font-weight:400;">('+packs.length+' pack'+(packs.length===1?'':'s')+')</span></div>'+
       '<div class="card-meta"><span>👤 '+esc(l.operator||"—")+'</span><span>🕒 '+fmtTime(l.createdAt)+'</span></div>'+
-      (!compact ? railHTML(l.stage) : '')+
+    '</button>';
+  }
+  function batchCardHTML(b){
+    var status = batchOverallStatus(b);
+    var packs = packsInBatch(b.id);
+    var names = packs.map(function(p){return p.name;});
+    var summary = names.length===0 ? "No packs" : names.length<=2 ? names.join(", ") : names.slice(0,2).join(", ")+" +"+(names.length-2)+" more";
+    return '<button class="card" data-open-batch="'+b.id+'">'+
+      '<div class="card-top"><div class="card-id mono">🧪 '+esc(b.id)+(b.sterId?' → '+esc(b.sterId):'')+'</div>'+
+      '<span class="badge badge-'+status.tone+'">'+esc(status.label)+'</span></div>'+
+      '<div class="card-contents">'+esc(summary)+' <span style="color:var(--faint); font-weight:400;">('+packs.length+' pack'+(packs.length===1?'':'s')+')</span></div>'+
+      '<div class="card-meta"><span>🕒 '+fmtTime(b.createdAt)+'</span></div>'+
     '</button>';
   }
 
   function bindCardEvents(){
     var newBtn = document.getElementById("btn-empty-new");
     if(newBtn) newBtn.onclick = function(){ state.showNew = true; render(); };
+    Array.prototype.forEach.call(document.querySelectorAll("[data-open-load]"), function(btn){
+      btn.onclick = function(){ state.openLoadId = btn.getAttribute("data-open-load"); state.confirming = null; render(); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-open-batch]"), function(btn){
+      btn.onclick = function(){ state.openBatchId = btn.getAttribute("data-open-batch"); state.confirming = null; render(); };
+    });
+    // Pool tab
+    Array.prototype.forEach.call(document.querySelectorAll("[data-pool-check]"), function(cb){
+      cb.onchange = function(){
+        var id = cb.getAttribute("data-pool-check");
+        if(cb.checked) state.poolSelection[id] = true; else delete state.poolSelection[id];
+        render();
+      };
+    });
+    var startBatchBtn = document.getElementById("btn-start-batch");
+    if(startBatchBtn) startBatchBtn.onclick = function(){ state.showNewBatch = true; render(); };
+    // History
     var monthInput = document.getElementById("month-input");
     if(monthInput) monthInput.onchange = function(){ state.exportMonth = monthInput.value; render(); };
+    var searchInput = document.getElementById("search-input");
+    if(searchInput) searchInput.oninput = function(){ state.search = searchInput.value; render(); searchInput.focus(); searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length; };
     var exportExcelBtn = document.getElementById("btn-export-excel");
     if(exportExcelBtn) exportExcelBtn.onclick = exportExcel;
     var exportPdfBtn = document.getElementById("btn-export-pdf");
     if(exportPdfBtn) exportPdfBtn.onclick = exportPdf;
-    var searchInput = document.getElementById("search-input");
-    if(searchInput) searchInput.oninput = function(){ state.search = searchInput.value; render(); searchInput.focus(); searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length; };
-    Array.prototype.forEach.call(document.querySelectorAll("[data-open]"), function(btn){
-      btn.onclick = function(){ state.openLoadId = btn.getAttribute("data-open"); state.confirming = null; render(); };
+    Array.prototype.forEach.call(document.querySelectorAll("[data-hist-open-load]"), function(btn){
+      btn.onclick = function(){ state.openLoadId = btn.getAttribute("data-hist-open-load"); render(); };
     });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-hist-open-batch]"), function(btn){
+      btn.onclick = function(){ state.openBatchId = btn.getAttribute("data-hist-open-batch"); render(); };
+    });
+    // Daily checks
     var checksMonthInput = document.getElementById("checks-month-input");
     if(checksMonthInput) checksMonthInput.onchange = function(){ state.checksMonth = checksMonthInput.value; render(); };
     var checksExcelBtn = document.getElementById("btn-export-checks-excel");
@@ -688,53 +717,134 @@
     if(checksPdfBtn) checksPdfBtn.onclick = exportChecksPdf;
   }
 
-  // Builds the row set for the currently-selected export month, one row per pack
-  // (a load with no packs, e.g. quarantined before packing, gets a single row).
-  function monthExportRows(){
-    var history = state.loads.filter(function(l){ return !isActiveLoad(l); });
-    var monthFiltered = history.filter(function(l){
-      return loadRecordDates(l).some(function(d){ return monthKey(d) === state.exportMonth; });
+  // ---------- Ready to Sterilise pool ----------
+  function poolHTML(){
+    var packs = poolPacks();
+    var selectedCount = Object.keys(state.poolSelection).length;
+    var html = '';
+    if(packs.length === 0){
+      html += '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No washed packs waiting — they\'ll appear here once a wash cycle passes.</div>';
+      return html;
+    }
+    html += '<div class="hint">Select which washed packs are going into the steriliser now — they can come from more than one wash load.</div>';
+    packs.forEach(function(p){
+      var load = findLoad(p.washerLoadId);
+      var checked = !!state.poolSelection[p.id];
+      html += '<label class="pack-item" style="display:flex; align-items:center; gap:12px; cursor:pointer;">'+
+        '<input type="checkbox" data-pool-check="'+p.id+'" '+(checked?"checked":"")+' style="width:22px; height:22px; flex:none;">'+
+        '<div style="flex:1;"><div class="pack-item-name">'+esc(p.name)+'</div>'+
+        '<div style="font-size:12px; color:var(--faint);">From '+esc(load?load.id:"—")+(load&&load.cycleNo?' · Cycle '+esc(load.cycleNo):'')+'</div></div>'+
+      '</label>';
     });
-    var rows = [];
-    monthFiltered.forEach(function(l){
-      if(l.stage === "quarantined" && !(l.packs||[]).length){
-        rows.push({loadId:l.id, washerCycleNo:l.washerCycleNo||"", sterId:l.sterId||"", pack:"—", status:"quarantined (whole load)", class1:"", operator:l.operator||"", releaser:l.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: fmtTime(l.quarantinedAt||l.createdAt), reason:l.quarantineReason||""});
-        return;
-      }
-      (l.packs||[]).forEach(function(p){
-        if(monthKey(p.releaseTime||l.createdAt) !== state.exportMonth) return;
-        rows.push({loadId:l.id, washerCycleNo:l.washerCycleNo||"", sterId:l.sterId||"", pack:p.name, status:p.status, class1:p.class1||"", operator:l.operator||"", releaser:p.releaser||"", washerProgram:l.washerProgram||"", sterProgram:l.sterProgram||"", when: p.releaseTime?fmtTime(p.releaseTime):"", reason:p.quarantineReason||""});
-      });
-    });
-    return rows;
+    html += '<div class="btn-row" style="margin-top:12px;"><button class="btn btn-primary" id="btn-start-batch" '+(selectedCount>0?"":"disabled")+'>🧪 Start steriliser batch ('+selectedCount+' selected)</button></div>';
+    return html;
   }
 
+  function historyControlsHTML(){
+    return '<div class="row-gap">'+
+      '<input type="month" class="month-input" id="month-input" value="'+esc(state.exportMonth)+'">'+
+      '<div class="search-wrap"><span class="search-icon">🔍</span>'+
+        '<input class="input" id="search-input" placeholder="Search load/batch ID, pack, operator…" value="'+esc(state.search)+'"></div>'+
+    '</div>'+
+    '<div class="export-row" style="margin-bottom:12px;">'+
+      '<button class="btn-export" id="btn-export-excel">📊 Export Excel</button>'+
+      '<button class="btn-export" id="btn-export-pdf">🖨 Export PDF</button>'+
+    '</div>';
+  }
+  function historyCards(q){
+    var histLoads = state.washerLoads.filter(function(l){ return !isActiveLoad(l); });
+    var histBatches = state.sterBatches.filter(function(b){ return !isActiveBatch(b); });
+    var items = [];
+    histLoads.forEach(function(l){
+      var dates = packsOf(l.id).map(function(p){return p.releaseTime||l.quarantinedAt||l.createdAt;});
+      if(dates.length===0) dates=[l.quarantinedAt||l.createdAt];
+      if(!dates.some(function(d){return monthKey(d)===state.exportMonth;})) return;
+      var names = packsOf(l.id).map(function(p){return p.name;}).join(" ");
+      if(q && (l.id+" "+names+" "+l.operator).toLowerCase().indexOf(q)===-1) return;
+      items.push({sortKey:l.createdAt, html: histLoadCardHTML(l)});
+    });
+    histBatches.forEach(function(b){
+      var dates = packsInBatch(b.id).map(function(p){return p.releaseTime||b.quarantinedAt||b.createdAt;});
+      if(dates.length===0) dates=[b.quarantinedAt||b.createdAt];
+      if(!dates.some(function(d){return monthKey(d)===state.exportMonth;})) return;
+      var names = packsInBatch(b.id).map(function(p){return p.name;}).join(" ");
+      if(q && (b.id+" "+(b.sterId||"")+" "+names).toLowerCase().indexOf(q)===-1) return;
+      items.push({sortKey:b.createdAt, html: histBatchCardHTML(b)});
+    });
+    items.sort(function(a,z){ return (z.sortKey||"").localeCompare(a.sortKey||""); });
+    return items.map(function(i){return i.html;});
+  }
+  function histLoadCardHTML(l){
+    var status = l.stage === "quarantined" ? {label:"Quarantined", tone:"alert"} : {label:"Washed", tone:"sterile"};
+    var packs = packsOf(l.id);
+    var names = packs.map(function(p){return p.name;});
+    var summary = names.length<=2 ? names.join(", ") : names.slice(0,2).join(", ")+" +"+(names.length-2)+" more";
+    return '<button class="card" data-hist-open-load="'+l.id+'">'+
+      '<div class="card-top"><div class="card-id mono">💧 '+esc(l.id)+'</div>'+
+      '<span class="badge badge-'+status.tone+'">'+esc(status.label)+'</span></div>'+
+      '<div class="card-contents">'+esc(summary)+' <span style="color:var(--faint); font-weight:400;">('+packs.length+' pack'+(packs.length===1?'':'s')+')</span></div>'+
+      '<div class="card-meta"><span>👤 '+esc(l.operator||"—")+'</span><span>🕒 '+fmtTime(l.createdAt)+'</span></div>'+
+    '</button>';
+  }
+  function histBatchCardHTML(b){
+    var status = batchOverallStatus(b);
+    var packs = packsInBatch(b.id);
+    var names = packs.map(function(p){return p.name;});
+    var summary = names.length<=2 ? names.join(", ") : names.slice(0,2).join(", ")+" +"+(names.length-2)+" more";
+    return '<button class="card" data-hist-open-batch="'+b.id+'">'+
+      '<div class="card-top"><div class="card-id mono">🧪 '+esc(b.id)+(b.sterId?' → '+esc(b.sterId):'')+'</div>'+
+      '<span class="badge badge-'+status.tone+'">'+esc(status.label)+'</span></div>'+
+      '<div class="card-contents">'+esc(summary)+' <span style="color:var(--faint); font-weight:400;">('+packs.length+' pack'+(packs.length===1?'':'s')+')</span></div>'+
+      '<div class="card-meta"><span>🕒 '+fmtTime(b.createdAt)+'</span></div>'+
+    '</button>';
+  }
+
+  // ---------- Exports (pack-centric: one row per resolved pack) ----------
+  function monthExportRows(){
+    var rows = [];
+    state.packs.forEach(function(p){
+      if(p.status!=="released" && p.status!=="quarantined") return;
+      var when = p.releaseTime;
+      if(monthKey(when) !== state.exportMonth) return;
+      var load = findLoad(p.washerLoadId);
+      var batch = p.sterBatchId ? findBatch(p.sterBatchId) : null;
+      rows.push({
+        loadId: load?load.id:"—", washerCycleNo: load?(load.cycleNo||""):"",
+        batchId: batch?batch.id:"—", sterId: batch?(batch.sterId||""):"",
+        pack: p.name, status: p.status, class1: p.class1||"",
+        operator: load?(load.operator||""):"", releaser: p.releaser||"",
+        washerProgram: load?(load.program||""):"", sterProgram: batch?(batch.program||""):"",
+        when: fmtTime(when), reason: p.quarantineReason||"",
+      });
+    });
+    rows.sort(function(a,b){ return a.loadId.localeCompare(b.loadId); });
+    return rows;
+  }
   function exportExcel(){
     var rows = monthExportRows();
-    var headers = ["Washer Load ID","Washer Cycle No.","Steriliser Batch No.","Pack Name","Pack Status","Class 1 Indicator","Operator","Releaser","Washer Program","Steriliser Program","Date/Time","Quarantine Reason"];
+    var headers = ["Washer Load ID","Washer Cycle No.","Steriliser Batch ID","Steriliser Batch No.","Pack Name","Pack Status","Class 1 Indicator","Operator","Releaser","Washer Program","Steriliser Program","Date/Time","Quarantine Reason"];
     var data = [headers].concat(rows.map(function(r){
-      return [r.loadId, r.washerCycleNo, r.sterId, r.pack, r.status, r.class1, r.operator, r.releaser, r.washerProgram, r.sterProgram, r.when, r.reason];
+      return [r.loadId, r.washerCycleNo, r.batchId, r.sterId, r.pack, r.status, r.class1, r.operator, r.releaser, r.washerProgram, r.sterProgram, r.when, r.reason];
     }));
     var ws = XLSX.utils.aoa_to_sheet(data);
-    ws["!cols"] = [{wch:16},{wch:14},{wch:14},{wch:22},{wch:16},{wch:12},{wch:14},{wch:14},{wch:22},{wch:22},{wch:16},{wch:28}];
+    ws["!cols"] = [{wch:16},{wch:14},{wch:16},{wch:14},{wch:22},{wch:16},{wch:12},{wch:14},{wch:14},{wch:22},{wch:22},{wch:16},{wch:28}];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Reprocessing Log");
     XLSX.writeFile(wb, "MoleSpot-SteriTrack-"+state.exportMonth+".xlsx");
   }
-
   function exportPdf(){
     var rows = monthExportRows();
     var monthLabel = new Date(state.exportMonth+"-01").toLocaleDateString("en-AU", {month:"long", year:"numeric"});
     var html = '<h1>MoleSpot Skin Cancer Clinic — SteriTrack Reprocessing Log</h1>'+
       '<div class="pr-sub">'+esc(monthLabel)+' · Generated '+fmtTime(new Date().toISOString())+'</div>'+
       '<div class="pr-summary">'+rows.length+' record'+(rows.length===1?"":"s")+' this month.</div>'+
-      '<table><thead><tr><th>Washer Load ID</th><th>Washer Cycle No.</th><th>Steriliser Batch No.</th><th>Pack Name</th><th>Pack Status</th><th>Class 1</th>'+
+      '<table><thead><tr><th>Washer Load ID</th><th>Washer Cycle No.</th><th>Steriliser Batch ID</th><th>Steriliser Batch No.</th><th>Pack Name</th><th>Pack Status</th><th>Class 1</th>'+
       '<th>Operator</th><th>Releaser</th><th>Washer Program</th><th>Steriliser Program</th><th>Date/Time</th><th>Quarantine Reason</th></tr></thead><tbody>';
     if(rows.length === 0){
-      html += '<tr><td colspan="12" style="text-align:center; color:#777;">No records for this month.</td></tr>';
+      html += '<tr><td colspan="13" style="text-align:center; color:#777;">No records for this month.</td></tr>';
     } else {
       rows.forEach(function(r){
-        html += '<tr><td>'+esc(r.loadId)+'</td><td>'+esc(r.washerCycleNo)+'</td><td>'+esc(r.sterId)+'</td><td>'+esc(r.pack)+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.class1)+'</td>'+
+        html += '<tr><td>'+esc(r.loadId)+'</td><td>'+esc(r.washerCycleNo)+'</td><td>'+esc(r.batchId)+'</td><td>'+esc(r.sterId)+'</td><td>'+esc(r.pack)+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.class1)+'</td>'+
           '<td>'+esc(r.operator)+'</td><td>'+esc(r.releaser)+'</td><td>'+esc(r.washerProgram)+'</td><td>'+esc(r.sterProgram)+'</td><td>'+esc(r.when)+'</td><td>'+esc(r.reason)+'</td></tr>';
       });
     }
@@ -743,7 +853,7 @@
     window.print();
   }
 
-  // ---------- Daily Checks (e.g. vacuum/leak test) ----------
+  // ---------- Daily Checks (unchanged from prior version) ----------
   function checksControlsHTML(){
     return '<div class="row-gap">'+
       '<input type="month" class="month-input" id="checks-month-input" value="'+esc(state.checksMonth)+'">'+
@@ -883,7 +993,6 @@
       cancelBtn.onclick = function(){ state.addingField = null; rerenderFn(); };
     }
   }
-
   function ynRowHTML(name, value, options){
     options = options || ["Y","N"];
     var negatives = {"N":true, "Fail":true};
@@ -898,7 +1007,7 @@
     });
   }
 
-  // ---------- New Load sheet ----------
+  // ---------- New Washer Load sheet ----------
   var newLoadDraft = { packs:[], operator:"", program:"", ppe:{} };
   function newLoadSheetHTML(){
     var allPpe = PPE_ITEMS.every(function(p){ return !!newLoadDraft.ppe[p]; });
@@ -917,19 +1026,14 @@
         '<div class="field"><span class="field-label">Packs in this load</span></div>'+
         chipsHtml+
         '<div style="margin-bottom:16px;">'+packPickerHTML("nl-pack-picker", state.lists.instrumentSets)+'</div>'+
+        '<div class="hint">Every instrument in a pack must come from this same wash cycle — don\'t combine instruments from different washer loads into one pack.</div>'+
         comboFieldHTML("nl-operator", "Operator", newLoadDraft.operator, state.lists.operators, "Select your name…")+
         comboFieldHTML("nl-program", "Washer program", newLoadDraft.program, state.lists.washerPrograms, "Select washer program…")+
-        '<div class="hint">Sterilising is done in batches, so the patient isn\'t known yet — that link gets recorded later in BP Premier, when each pack is actually opened for use.</div>'+
         '<div><span class="field-label">PPE confirmed (Section 8, Step 3–4)</span>'+ppeHtml+'</div>'+
       '</div>'+
       '<div class="sheet-footer"><button class="btn btn-primary" id="new-start" '+(canStart?"":"disabled")+'>💧 Start washer cycle</button></div>'+
     '</div></div>';
   }
-  // A picker for adding items to a growing list (used for "packs in this load").
-  // Uses a plain native <select> (not <datalist>, which iOS Safari doesn't support
-  // for suggestions) — picking an existing option adds it immediately; "+ Add new…"
-  // switches to a text entry that adds the typed value to both the chip list and the
-  // saved instrumentSets list for next time.
   function packPickerHTML(id, options){
     if(state.addingField === id){
       return '<div style="display:flex; gap:8px;">'+
@@ -943,12 +1047,12 @@
     opts += '<option value="__add__">+ Add new…</option>';
     return '<select class="input" id="'+id+'">'+opts+'</select>';
   }
-  function bindPackPicker(id){
+  function bindPackPicker(id, targetArrRef, category){
     var sel = document.getElementById(id);
     if(sel){
       sel.onchange = function(){
         if(sel.value === "__add__"){ state.addingField = id; render(); return; }
-        if(sel.value){ newLoadDraft.packs = newLoadDraft.packs.concat([sel.value]); render(); }
+        if(sel.value){ targetArrRef.push(sel.value); render(); }
       };
     }
     var addBtn = document.getElementById(id+"-add-confirm");
@@ -956,7 +1060,7 @@
       addBtn.onclick = function(){
         var input = document.getElementById(id+"-newval");
         var v = (input.value||"").trim();
-        if(v){ addToList("instrumentSets", v); newLoadDraft.packs = newLoadDraft.packs.concat([v]); }
+        if(v){ addToList(category, v); targetArrRef.push(v); }
         state.addingField = null;
         render();
       };
@@ -970,8 +1074,7 @@
   function bindNewLoadEvents(){
     document.getElementById("new-close").onclick = closeNew;
     document.getElementById("new-overlay").onclick = function(e){ if(e.target.id==="new-overlay") closeNew(); };
-
-    bindPackPicker("nl-pack-picker");
+    bindPackPicker("nl-pack-picker", newLoadDraft.packs, "instrumentSets");
     Array.prototype.forEach.call(document.querySelectorAll("[data-remove-pack]"), function(btn){
       btn.onclick = function(){
         var i = parseInt(btn.getAttribute("data-remove-pack"), 10);
@@ -979,7 +1082,6 @@
         render();
       };
     });
-
     bindComboField("nl-operator", "operators", function(v){ newLoadDraft.operator=v; render(); }, render);
     bindComboField("nl-program", "washerPrograms", function(v){ newLoadDraft.program=v; render(); }, render);
     Array.prototype.forEach.call(document.querySelectorAll("[data-ppe]"), function(cb){
@@ -988,91 +1090,46 @@
     var startBtn = document.getElementById("new-start");
     if(startBtn) startBtn.onclick = function(){
       var load = {
-        id: nextLoadId(), sterId:null, createdAt: new Date().toISOString(), stage:"washing",
-        operator: newLoadDraft.operator, washerProgram: newLoadDraft.program, washerStart: new Date().toISOString(),
-        packs: newLoadDraft.packs.map(function(name){
-          return {id: uid(), name: name, class1:null, pouchOk:null, status:"pending", quarantineReason:null, releaser:null, releaseTime:null};
-        }),
+        id: nextLoadId(), cycleNo:null, createdAt: new Date().toISOString(), stage:"washing",
+        operator: newLoadDraft.operator, program: newLoadDraft.program, startTime: new Date().toISOString(),
       };
-      state.loads = [load].concat(state.loads);
+      var packs = newLoadDraft.packs.map(function(name){
+        return {id: uid(), name: name, washerLoadId: load.id, sterBatchId:null, class1:null, pouchOk:null, status:"awaiting_sterilisation", quarantineReason:null, releaser:null, releaseTime:null};
+      });
+      state.washerLoads = [load].concat(state.washerLoads);
+      state.packs = state.packs.concat(packs);
       state.openLoadId = load.id;
       closeNew();
-      createLoadRemote(load).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+      createWasherLoadRemote(load, packs).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
     };
   }
 
-  // ---------- Load Detail sheet ----------
-  var detailDraft = {}; // scratch state for the currently-open inline form
+  // ---------- Washer Load detail ----------
+  var detailDraft = {};
   function loadDetailHTML(load){
     if(!load) return "";
-    var stage = load.stage;
-    var idx = stageIdx(stage === "quarantined" ? "washing" : stage);
+    var packs = packsOf(load.id);
     var body = '';
-    body += railHTML(stage);
     body += summaryRow("Operator", load.operator);
-    body += summaryRow("Packs", packSummaryText(load));
-
-    if(stage === "quarantined"){
-      body += '<div class="alert-box"><strong>⚠ Whole load quarantined</strong><br>'+esc(load.quarantineReason)+'</div>';
-    }
-
-    // Washer stage
-    body += '<div class="stage-block '+(idx>0 && stage!=="quarantined"?"done":"pending")+'">'+
-      '<div class="stage-head">💧 Washer-disinfector'+(idx>0 && stage!=="quarantined"?'<span class="check">✓</span>':'')+'</div>'+
-      summaryRow("Cycle no.", load.washerCycleNo, true, true) + summaryRow("Program", load.washerProgram, true) + summaryRow("Started", fmtTime(load.washerStart), true);
-    if(stage === "washing"){
+    body += summaryRow("Program", load.program);
+    body += summaryRow("Started", fmtTime(load.startTime));
+    if(load.stage === "quarantined"){
+      body += '<div class="alert-box"><strong>⚠ Load quarantined</strong><br>'+esc(load.quarantineReason)+'</div>';
+    } else if(load.stage === "washing"){
       body += state.confirming === "washer_result" ? washerResultFormHTML() :
         '<button class="btn btn-primary" id="btn-washer-done">✓ Mark cycle complete</button>';
+    } else {
+      body += summaryRow("Cycle no.", load.cycleNo, false, true);
     }
-    body += '</div>';
-
-    // Pack & steriliser stage
-    if(idx >= 1 && stage !== "quarantined"){
-      body += '<div class="stage-block '+(idx>2?"done":"pending")+'">'+
-        '<div class="stage-head">🧪 Pack & steriliser'+(idx>2?'<span class="check">✓</span>':'')+'</div>';
-      if(stage === "ready_to_pack"){
-        body += state.confirming === "pack" ? packFormHTML(load) :
-          '<button class="btn btn-primary" id="btn-pack">📦 Pack &amp; start steriliser</button>';
-      } else {
-        if(load.sterId) body += summaryRow("MELAG batch no.", load.sterId, true, true);
-        body += summaryRow("Program", load.sterProgram, true);
-        body += summaryRow("Started", fmtTime(load.sterStart), true);
-      }
-      if(stage === "sterilising"){
-        body += state.confirming === "ster_result" ? sterResultFormHTML() :
-          '<button class="btn btn-primary" id="btn-ster-done">✓ Read batch no. &amp; mark complete</button>';
-      }
-      body += '</div>';
-    }
-
-    // Cool & release stage
-    if(idx >= 3 && stage !== "quarantined"){
-      body += '<div class="stage-block '+(stage==="done"?"done":"pending")+'">'+
-        '<div class="stage-head">🛡 Cool & release'+(stage==="done"?'<span class="check">✓</span>':'')+'</div>';
-      if(stage === "cooling"){
-        body += state.confirming === "cool_setup" ? coolSetupFormHTML() :
-          '<button class="btn btn-success" id="btn-cool-setup">🔒 Confirm cool-down &amp; releaser</button>';
-      } else if(stage === "done"){
-        body += summaryRow("Cooled & confirmed by", load.releaser, true);
-        body += packReleaseListHTML(load);
-      }
-      body += '</div>';
-    }
-
-    if(stage === "done"){
-      var released = (load.packs||[]).filter(function(p){return p.status==="released";});
-      if(released.length){
-        body += '<div class="stage-block pending"><div class="stage-head">👤 Patient linkage</div>'+
-          '<div style="font-size:13px; color:var(--faint); margin-bottom:8px;">When each pack below is opened for use, record its batch + pack name directly in the patient\'s file in BP Premier. Not tracked here.</div>'+
-          released.map(function(p){
-            return '<div style="font-size:13px; padding:4px 0;">Batch <strong class="mono" style="color:var(--ink)">'+esc(load.sterId)+'</strong> — '+esc(p.name)+'</div>';
-          }).join('') +
-        '</div>';
-      }
-    }
-
+    body += '<div class="field-label" style="margin:16px 0 8px;">Packs washed in this load</div>';
+    packs.forEach(function(p){
+      var statusLabel = p.status==="quarantined" ? "quarantined" : p.status==="released" ? "released" : p.sterBatchId ? "in batch "+p.sterBatchId : "awaiting sterilisation";
+      var tone = p.status==="quarantined" ? "alert" : p.status==="released" ? "sterile" : "neutral";
+      body += '<div class="pack-item"><div class="pack-item-head"><span class="pack-item-name">'+esc(p.name)+'</span>'+
+        '<span class="badge badge-'+tone+'">'+esc(statusLabel)+'</span></div></div>';
+    });
     return '<div class="overlay" id="detail-overlay"><div class="sheet">'+
-      '<div class="sheet-header"><div class="sheet-title mono">'+esc(load.id)+'</div><button class="sheet-close" id="detail-close">✕</button></div>'+
+      '<div class="sheet-header"><div class="sheet-title mono">💧 '+esc(load.id)+'</div><button class="sheet-close" id="detail-close">✕</button></div>'+
       '<div class="sheet-body">'+body+'</div>'+
     '</div></div>';
   }
@@ -1081,7 +1138,6 @@
     return '<div class="summary-row" style="font-size:'+(small?"12px":"13px")+'"><span>'+esc(label)+'</span>'+
       '<span class="val'+(mono?" mono":"")+'" style="font-size:'+(small?"13px":"14px")+'">'+esc(value===""?"—":value)+'</span></div>';
   }
-
   function washerResultFormHTML(){
     var d = detailDraft;
     if(d.showFail){
@@ -1100,30 +1156,132 @@
       '<button class="btn btn-danger" id="wr-fail">Cycle failed</button>'+
       '<button class="btn btn-success" id="wr-pass" '+(canPass?"":"disabled")+'>✓ Cycle passed</button></div></div>';
   }
-
-  function packFormHTML(load){
-    var d = detailDraft;
-    if(!d.packChecks) d.packChecks = {};
-    var allClass1Set = (load.packs||[]).every(function(p){ return d.packChecks[p.id] && d.packChecks[p.id].class1==="Y"; });
-    var program = d.program || "";
-    var canSubmit = allClass1Set && program;
-    var html = '<div style="padding-top:8px;">';
-    html += '<div class="field-label" style="margin-bottom:8px;">Indicators — confirm for each pack before sealing</div>';
-    (load.packs||[]).forEach(function(p){
-      var pc = d.packChecks[p.id] || {class1:null};
-      d.packChecks[p.id] = pc;
-      html += '<div class="pack-item"><div class="pack-item-head"><span class="pack-item-name">'+esc(p.name)+'</span></div>';
-      html += '<div class="field" style="margin-bottom:0;"><span class="field-label">Class 1 indicator present (mandatory)</span>'+ynRowHTML("class1-"+p.id, pc.class1)+'</div>';
-      html += '</div>';
-    });
-    html += comboFieldHTML("pf-program", "Steriliser program", program, state.lists.sterPrograms, "Select steriliser program…");
-    if(!allClass1Set) html += '<div class="warn-text">Every pack needs its Class 1 indicator confirmed before starting the steriliser.</div>';
-    html += '<div class="btn-row"><button class="btn btn-ghost" id="pf-cancel">Cancel</button>'+
-      '<button class="btn btn-primary" id="pf-submit" '+(canSubmit?"":"disabled")+'>🧪 Start steriliser</button></div>';
-    html += '</div>';
-    return html;
+  function closeDetail(){ state.openLoadId = null; state.confirming = null; detailDraft = {}; state.addingField = null; render(); }
+  function bindLoadDetailEvents(){
+    var load = findLoad(state.openLoadId);
+    if(!load) return;
+    document.getElementById("detail-close").onclick = closeDetail;
+    document.getElementById("detail-overlay").onclick = function(e){ if(e.target.id==="detail-overlay") closeDetail(); };
+    var btnWasher = document.getElementById("btn-washer-done");
+    if(btnWasher) btnWasher.onclick = function(){ state.confirming = "washer_result"; detailDraft = {}; render(); };
+    if(state.confirming === "washer_result"){
+      var wrFail = document.getElementById("wr-fail"); if(wrFail) wrFail.onclick = function(){ detailDraft.showFail = true; render(); };
+      var wrCycleNo = document.getElementById("wr-cycleno"); if(wrCycleNo) wrCycleNo.oninput = function(){
+        detailDraft.washerCycleNo = wrCycleNo.value;
+        var wrBtn = document.getElementById("wr-pass"); if(wrBtn) wrBtn.disabled = !wrCycleNo.value.trim();
+      };
+      var wrPass = document.getElementById("wr-pass"); if(wrPass) wrPass.onclick = function(){
+        updateWasherLoad(load.id, {stage:"done", result:"pass", cycleNo: detailDraft.washerCycleNo});
+        state.confirming = null; detailDraft = {};
+      };
+      var wfReason = document.getElementById("wf-reason"); if(wfReason) wfReason.oninput = function(){
+        detailDraft.failReason = wfReason.value;
+        var wfBtn = document.getElementById("wf-quarantine"); if(wfBtn) wfBtn.disabled = !wfReason.value.trim();
+      };
+      var wfBack = document.getElementById("wf-back"); if(wfBack) wfBack.onclick = function(){ detailDraft.showFail=false; render(); };
+      var wfQ = document.getElementById("wf-quarantine"); if(wfQ) wfQ.onclick = function(){
+        quarantineWholeLoad(load, "Washer cycle failed: "+detailDraft.failReason);
+        state.confirming = null; detailDraft = {};
+      };
+    }
   }
 
+  // ---------- New Steriliser Batch sheet (from pool selection) ----------
+  function newBatchSheetHTML(){
+    var d = detailDraft;
+    if(!d.packChecks) d.packChecks = {};
+    var selectedIds = Object.keys(state.poolSelection);
+    var selectedPacks = selectedIds.map(function(id){ return state.packs.filter(function(p){return p.id===id;})[0]; }).filter(Boolean);
+    var allClass1Set = selectedPacks.every(function(p){ return d.packChecks[p.id] && d.packChecks[p.id].class1==="Y"; });
+    var program = d.program || "";
+    var canSubmit = allClass1Set && program && selectedPacks.length>0;
+    var html = '<div class="overlay" id="new-batch-overlay"><div class="sheet">'+
+      '<div class="sheet-header"><div class="sheet-title display">New steriliser batch</div><button class="sheet-close" id="new-batch-close">✕</button></div>'+
+      '<div class="sheet-body">'+
+      '<div class="field-label" style="margin-bottom:8px;">Indicators — confirm for each pack before sealing</div>';
+    selectedPacks.forEach(function(p){
+      var load = findLoad(p.washerLoadId);
+      var pc = d.packChecks[p.id] || {class1:null};
+      d.packChecks[p.id] = pc;
+      html += '<div class="pack-item"><div class="pack-item-head"><span class="pack-item-name">'+esc(p.name)+'</span>'+
+        '<span style="font-size:12px; color:var(--faint);">from '+esc(load?load.id:"—")+'</span></div>';
+      html += '<div class="field" style="margin-bottom:0;"><span class="field-label">Class 1 indicator present (mandatory)</span>'+ynRowHTML("nb-class1-"+p.id, pc.class1)+'</div>';
+      html += '</div>';
+    });
+    html += comboFieldHTML("nb-program", "Steriliser program", program, state.lists.sterPrograms, "Select steriliser program…");
+    if(!allClass1Set) html += '<div class="warn-text">Every pack needs its Class 1 indicator confirmed before starting the steriliser.</div>';
+    html += '</div><div class="sheet-footer"><button class="btn btn-primary" id="new-batch-start" '+(canSubmit?"":"disabled")+'>🧪 Start steriliser</button></div></div></div>';
+    return html;
+  }
+  function closeNewBatch(){ state.showNewBatch = false; detailDraft = {}; state.addingField = null; render(); }
+  function bindNewBatchEvents(){
+    var selectedIds = Object.keys(state.poolSelection);
+    var selectedPacks = selectedIds.map(function(id){ return state.packs.filter(function(p){return p.id===id;})[0]; }).filter(Boolean);
+    document.getElementById("new-batch-close").onclick = closeNewBatch;
+    document.getElementById("new-batch-overlay").onclick = function(e){ if(e.target.id==="new-batch-overlay") closeNewBatch(); };
+    selectedPacks.forEach(function(p){
+      bindYnRow("nb-class1-"+p.id, function(v){ detailDraft.packChecks[p.id] = Object.assign({}, detailDraft.packChecks[p.id], {class1:v}); render(); });
+    });
+    bindComboField("nb-program", "sterPrograms", function(v){ detailDraft.program=v; render(); }, render);
+    var startBtn = document.getElementById("new-batch-start");
+    if(startBtn) startBtn.onclick = function(){
+      var batch = {
+        id: nextBatchId(), sterId:null, createdAt: new Date().toISOString(), stage:"sterilising",
+        program: detailDraft.program, startTime: new Date().toISOString(),
+      };
+      state.sterBatches = [batch].concat(state.sterBatches);
+      selectedPacks.forEach(function(p){
+        var pc = detailDraft.packChecks[p.id] || {};
+        state.packs = state.packs.map(function(pp){
+          return pp.id===p.id ? Object.assign({}, pp, {class1: pc.class1, sterBatchId: batch.id, status:"assigned"}) : pp;
+        });
+      });
+      state.poolSelection = {};
+      state.openBatchId = batch.id;
+      closeNewBatch();
+      createSterBatchRemote(batch).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+      selectedPacks.forEach(function(p){
+        var updated = state.packs.filter(function(pp){return pp.id===p.id;})[0];
+        if(updated) updatePackRemote(updated).then(function(){ markSync(true); }).catch(function(e){ console.error(e); markSync(false); });
+      });
+    };
+  }
+
+  // ---------- Steriliser Batch detail ----------
+  function batchDetailHTML(batch){
+    if(!batch) return "";
+    var packs = packsInBatch(batch.id);
+    var body = '';
+    body += summaryRow("Program", batch.program);
+    body += summaryRow("Started", fmtTime(batch.startTime));
+    if(batch.sterId) body += summaryRow("MELAG batch no.", batch.sterId, false, true);
+    if(batch.stage === "quarantined"){
+      body += '<div class="alert-box"><strong>⚠ Batch quarantined</strong><br>'+esc(batch.quarantineReason)+'</div>';
+    }
+    if(batch.stage === "sterilising"){
+      body += state.confirming === "ster_result" ? sterResultFormHTML() :
+        '<button class="btn btn-primary" id="btn-ster-done">✓ Read batch no. &amp; mark complete</button>';
+    } else if(batch.stage === "cooling"){
+      body += state.confirming === "cool_setup" ? coolSetupFormHTML() :
+        '<button class="btn btn-success" id="btn-cool-setup">🔒 Confirm cool-down &amp; releaser</button>';
+    } else if(batch.stage === "done"){
+      body += summaryRow("Cooled & confirmed by", batch.releaser);
+      body += packReleaseListHTML(packs);
+      var released = packs.filter(function(p){return p.status==="released";});
+      if(released.length){
+        body += '<div class="stage-block pending"><div class="stage-head">👤 Patient linkage</div>'+
+          '<div style="font-size:13px; color:var(--faint); margin-bottom:8px;">When each pack below is opened for use, record its batch + pack name directly in the patient\'s file in BP Premier. Not tracked here.</div>'+
+          released.map(function(p){
+            return '<div style="font-size:13px; padding:4px 0;">Batch <strong class="mono" style="color:var(--ink)">'+esc(batch.sterId)+'</strong> — '+esc(p.name)+'</div>';
+          }).join('') +
+        '</div>';
+      }
+    }
+    return '<div class="overlay" id="batch-detail-overlay"><div class="sheet">'+
+      '<div class="sheet-header"><div class="sheet-title mono">🧪 '+esc(batch.id)+'</div><button class="sheet-close" id="batch-detail-close">✕</button></div>'+
+      '<div class="sheet-body">'+body+'</div>'+
+    '</div></div>';
+  }
   function sterResultFormHTML(){
     var d = detailDraft;
     var batchNo = d.batchNo||"", params = d.params||null, reason = d.sterReason||"";
@@ -1138,14 +1296,13 @@
     }
     html += '<div class="btn-row"><button class="btn btn-ghost" id="sr-cancel">Cancel</button>';
     if(anyNo){
-      html += '<button class="btn btn-danger" id="sr-quarantine" '+((reason||"").trim()?"":"disabled")+'>⚠ Quarantine load</button>';
+      html += '<button class="btn btn-danger" id="sr-quarantine" '+((reason||"").trim()?"":"disabled")+'>⚠ Quarantine batch</button>';
     } else {
       html += '<button class="btn btn-success" id="sr-confirm" '+(bothOk?"":"disabled")+'>✓ Confirm &amp; cool</button>';
     }
     html += '</div></div>';
     return html;
   }
-
   function coolSetupFormHTML(){
     var d = detailDraft;
     var cooled = !!d.cooled, releaser = d.releaser||"";
@@ -1159,16 +1316,15 @@
     html += '</div>';
     return html;
   }
-
-  function packReleaseListHTML(load){
+  function packReleaseListHTML(packs){
     var html = '<div style="padding-top:4px;">';
-    (load.packs||[]).forEach(function(p){
+    packs.forEach(function(p){
       var cls = p.status==="released" ? "pack-released" : p.status==="quarantined" ? "pack-quarantined" : "";
       html += '<div class="pack-item '+cls+'"><div class="pack-item-head">'+
         '<span class="pack-item-name">'+esc(p.name)+'</span>'+
-        '<span class="badge badge-'+(p.status==="released"?"sterile":p.status==="quarantined"?"alert":"neutral")+'">'+esc(p.status)+'</span>'+
+        '<span class="badge badge-'+(p.status==="released"?"sterile":p.status==="quarantined"?"alert":"neutral")+'">'+esc(p.status==="assigned"?"pending":p.status)+'</span>'+
         '</div>';
-      if(p.status === "pending"){
+      if(p.status === "assigned"){
         var checking = detailDraft.packChecking === p.id;
         if(checking){
           var pouch = detailDraft.pouchOk || null;
@@ -1187,7 +1343,7 @@
         }
       } else if(p.status === "quarantined") {
         html += '<div style="font-size:13px; color:var(--alert);">'+esc(p.quarantineReason||"")+'</div>';
-      } else {
+      } else if(p.status === "released") {
         html += summaryRow("Released", fmtTime(p.releaseTime), true);
       }
       html += '</div>';
@@ -1195,62 +1351,15 @@
     html += '</div>';
     return html;
   }
+  function closeBatchDetail(){ state.openBatchId = null; state.confirming = null; detailDraft = {}; state.addingField = null; render(); }
+  function bindBatchDetailEvents(){
+    var batch = findBatch(state.openBatchId);
+    if(!batch) return;
+    document.getElementById("batch-detail-close").onclick = closeBatchDetail;
+    document.getElementById("batch-detail-overlay").onclick = function(e){ if(e.target.id==="batch-detail-overlay") closeBatchDetail(); };
+    var btnSter = document.getElementById("btn-ster-done"); if(btnSter) btnSter.onclick = function(){ state.confirming="ster_result"; detailDraft={}; render(); };
+    var btnCoolSetup = document.getElementById("btn-cool-setup"); if(btnCoolSetup) btnCoolSetup.onclick = function(){ state.confirming="cool_setup"; detailDraft={}; render(); };
 
-  function closeDetail(){ state.openLoadId = null; state.confirming = null; detailDraft = {}; state.addingField = null; render(); }
-
-  function bindDetailEvents(){
-    var load = findLoad(state.openLoadId);
-    if(!load) return;
-    document.getElementById("detail-close").onclick = closeDetail;
-    document.getElementById("detail-overlay").onclick = function(e){ if(e.target.id==="detail-overlay") closeDetail(); };
-
-    function openConfirm(name){ state.confirming = name; detailDraft = {}; render(); }
-
-    var btnWasher = document.getElementById("btn-washer-done"); if(btnWasher) btnWasher.onclick = function(){ openConfirm("washer_result"); };
-    var btnPack = document.getElementById("btn-pack"); if(btnPack) btnPack.onclick = function(){ openConfirm("pack"); };
-    var btnSter = document.getElementById("btn-ster-done"); if(btnSter) btnSter.onclick = function(){ openConfirm("ster_result"); };
-    var btnCoolSetup = document.getElementById("btn-cool-setup"); if(btnCoolSetup) btnCoolSetup.onclick = function(){ openConfirm("cool_setup"); };
-
-    // washer result form
-    if(state.confirming === "washer_result"){
-      var wrFail = document.getElementById("wr-fail"); if(wrFail) wrFail.onclick = function(){ detailDraft.showFail = true; render(); };
-      var wrCycleNo = document.getElementById("wr-cycleno"); if(wrCycleNo) wrCycleNo.oninput = function(){
-        detailDraft.washerCycleNo = wrCycleNo.value;
-        var wrBtn = document.getElementById("wr-pass"); if(wrBtn) wrBtn.disabled = !wrCycleNo.value.trim();
-      };
-      var wrPass = document.getElementById("wr-pass"); if(wrPass) wrPass.onclick = function(){
-        updateLoad(load.id, {stage:"ready_to_pack", washerResult:"pass", washerCycleNo: detailDraft.washerCycleNo});
-        state.confirming = null; detailDraft = {};
-      };
-      var wfReason = document.getElementById("wf-reason"); if(wfReason) wfReason.oninput = function(){
-        detailDraft.failReason = wfReason.value;
-        var wfBtn = document.getElementById("wf-quarantine"); if(wfBtn) wfBtn.disabled = !wfReason.value.trim();
-      };
-      var wfBack = document.getElementById("wf-back"); if(wfBack) wfBack.onclick = function(){ detailDraft.showFail=false; render(); };
-      var wfQ = document.getElementById("wf-quarantine"); if(wfQ) wfQ.onclick = function(){
-        quarantineWholeLoad(load, "Washer cycle failed: "+detailDraft.failReason);
-        state.confirming = null; detailDraft = {};
-      };
-    }
-
-    // pack form (per-pack indicators + program)
-    if(state.confirming === "pack"){
-      (load.packs||[]).forEach(function(p){
-        bindYnRow("class1-"+p.id, function(v){ detailDraft.packChecks[p.id] = Object.assign({}, detailDraft.packChecks[p.id], {class1:v}); render(); });
-      });
-      bindComboField("pf-program", "sterPrograms", function(v){ detailDraft.program=v; render(); }, render);
-      var pfCancel = document.getElementById("pf-cancel"); if(pfCancel) pfCancel.onclick = function(){ state.confirming=null; detailDraft={}; render(); };
-      var pfSubmit = document.getElementById("pf-submit"); if(pfSubmit) pfSubmit.onclick = function(){
-        var packs = load.packs.map(function(p){
-          var pc = detailDraft.packChecks[p.id] || {};
-          return Object.assign({}, p, {class1: pc.class1});
-        });
-        updateLoad(load.id, {packs: packs, sterProgram:detailDraft.program, stage:"sterilising", sterStart:new Date().toISOString()});
-        state.confirming = null; detailDraft = {};
-      };
-    }
-
-    // steriliser result form
     if(state.confirming === "ster_result"){
       var srBatch = document.getElementById("sr-batch"); if(srBatch) srBatch.oninput = function(){ detailDraft.batchNo = srBatch.value; };
       bindYnRow("params", function(v){ detailDraft.params=v; render(); });
@@ -1260,28 +1369,24 @@
       };
       var srCancel = document.getElementById("sr-cancel"); if(srCancel) srCancel.onclick = function(){ state.confirming=null; detailDraft={}; render(); };
       var srConfirm = document.getElementById("sr-confirm"); if(srConfirm) srConfirm.onclick = function(){
-        updateLoad(load.id, {stage:"cooling", sterResult:"pass", sterId:detailDraft.batchNo});
+        updateSterBatch(batch.id, {stage:"cooling", result:"pass", sterId:detailDraft.batchNo});
         state.confirming = null; detailDraft = {};
       };
       var srQ = document.getElementById("sr-quarantine"); if(srQ) srQ.onclick = function(){
-        quarantineWholeLoad(load, "Steriliser cycle failed: "+detailDraft.sterReason);
+        quarantineWholeBatch(batch, "Steriliser cycle failed: "+detailDraft.sterReason);
         state.confirming = null; detailDraft = {};
       };
     }
-
-    // cool setup form (shared cooled + releaser, once per load)
     if(state.confirming === "cool_setup"){
       var csCooled = document.getElementById("cs-cooled"); if(csCooled) csCooled.onchange = function(){ detailDraft.cooled = csCooled.checked; render(); };
       bindComboField("cs-releaser", "operators", function(v){ detailDraft.releaser=v; render(); }, render);
       var csCancel = document.getElementById("cs-cancel"); if(csCancel) csCancel.onclick = function(){ state.confirming=null; detailDraft={}; render(); };
       var csConfirm = document.getElementById("cs-confirm"); if(csConfirm) csConfirm.onclick = function(){
-        updateLoad(load.id, {stage:"done", releaser: detailDraft.releaser});
+        updateSterBatch(batch.id, {stage:"done", releaser: detailDraft.releaser});
         state.confirming = null; detailDraft = {};
       };
     }
-
-    // per-pack release/quarantine, active once stage === "done"
-    if(load.stage === "done"){
+    if(batch.stage === "done"){
       Array.prototype.forEach.call(document.querySelectorAll("[data-pack-check]"), function(btn){
         btn.onclick = function(){ detailDraft.packChecking = btn.getAttribute("data-pack-check"); detailDraft.pouchOk = null; detailDraft.packReason = ""; render(); };
       });
@@ -1299,14 +1404,14 @@
       Array.prototype.forEach.call(document.querySelectorAll("[data-pack-release]"), function(btn){
         btn.onclick = function(){
           var pid2 = btn.getAttribute("data-pack-release");
-          updatePack(load.id, pid2, {status:"released", pouchOk:"Y", releaser: load.releaser, releaseTime: new Date().toISOString()});
+          updatePack(pid2, {status:"released", pouchOk:"Y", releaser: batch.releaser, releaseTime: new Date().toISOString()});
           detailDraft.packChecking = null;
         };
       });
       Array.prototype.forEach.call(document.querySelectorAll("[data-pack-quarantine]"), function(btn){
         btn.onclick = function(){
           var pid3 = btn.getAttribute("data-pack-quarantine");
-          updatePack(load.id, pid3, {status:"quarantined", pouchOk:"N", quarantineReason: detailDraft.packReason, releaseTime: new Date().toISOString()});
+          updatePack(pid3, {status:"quarantined", pouchOk:"N", quarantineReason: detailDraft.packReason, releaseTime: new Date().toISOString()});
           detailDraft.packChecking = null;
         };
       });
@@ -1331,48 +1436,32 @@
     var btn = document.getElementById("retry-btn");
     if(btn) btn.onclick = function(){ boot(); };
   }
-
-  // ---------- Polling refresh (Graph has no live push, so refresh periodically) ----------
   function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
   function startPolling(){
     stopPolling();
     pollTimer = setInterval(function(){
-      // Skip a refresh cycle while the user is actively filling in a form, so we don't
-      // wipe out unsaved input the same way the Supabase version was careful to avoid.
-      if(state.showNew || state.confirming || state.addingField) return;
+      if(state.showNew || state.showNewBatch || state.confirming || state.addingField) return;
       fetchAllData().then(function(){ markSync(true); render(); }).catch(function(e){ console.error(e); markSync(false); });
     }, 25000);
   }
-
-  // ---------- Boot ----------
   async function boot(){
     root.innerHTML = connectingScreenHTML();
     try {
       msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
       await msalInstance.initialize();
-
       var redirectResult = await msalInstance.handleRedirectPromise();
       if(redirectResult && redirectResult.account){
         activeAccount = redirectResult.account;
       } else {
         var accounts = msalInstance.getAllAccounts();
-        if(accounts.length > 0){
-          activeAccount = accounts[0];
-        } else {
-          // Not signed in yet — send to Microsoft sign-in. Page navigates away;
-          // execution resumes above (handleRedirectPromise) after returning.
-          await msalInstance.loginRedirect({scopes: GRAPH_SCOPES});
-          return;
-        }
+        if(accounts.length > 0){ activeAccount = accounts[0]; }
+        else { await msalInstance.loginRedirect({scopes: GRAPH_SCOPES}); return; }
       }
       msalInstance.setActiveAccount(activeAccount);
-
       root.innerHTML = connectingScreenHTML("Connecting to your SharePoint site…");
       await resolveSiteId();
-
-      root.innerHTML = connectingScreenHTML("Loading loads and packs…");
+      root.innerHTML = connectingScreenHTML("Loading loads, batches and packs…");
       await fetchAllData();
-
       syncStatus = "ok";
       render();
       startPolling();
