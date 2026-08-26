@@ -138,6 +138,13 @@
   .pack-add-row{display:flex; gap:8px; margin-bottom:10px;}
   .pack-add-row select{flex:1;}
   .chip-list{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px;}
+  /* Ready-to-sterilise pool: grouped by washer cycle, cycle number is the
+     dominant element since that's what's handwritten on the physical pouch */
+  .pool-group{background:var(--white); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px;}
+  .pool-group-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--line);}
+  .pool-group-cycle{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:22px; font-weight:700; color:var(--ink); line-height:1.2;}
+  .pool-group-sub{font-size:12px; color:var(--faint); margin-top:2px;}
+  .pool-select-all{min-height:36px; padding:0 14px; border-radius:8px; border:1px solid var(--lineStrong); background:var(--white); font-size:13px; font-weight:600; color:var(--ink);}
   .chip{display:flex; align-items:center; gap:6px; background:var(--dirtyBg); border-radius:999px;
     padding:6px 6px 6px 14px; font-size:13px; font-weight:500;}
   .chip button{width:20px; height:20px; border-radius:999px; background:rgba(0,0,0,.08); border:none;
@@ -691,6 +698,17 @@
         render();
       };
     });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-select-cycle]"), function(btn){
+      btn.onclick = function(){
+        var loadId = btn.getAttribute("data-select-cycle");
+        var groupPacks = poolPacks().filter(function(p){ return p.washerLoadId === loadId; });
+        var allChecked = groupPacks.every(function(p){ return !!state.poolSelection[p.id]; });
+        groupPacks.forEach(function(p){
+          if(allChecked) delete state.poolSelection[p.id]; else state.poolSelection[p.id] = true;
+        });
+        render();
+      };
+    });
     var startBatchBtn = document.getElementById("btn-start-batch");
     if(startBatchBtn) startBatchBtn.onclick = function(){ state.showNewBatch = true; render(); };
     // History
@@ -721,20 +739,42 @@
   function poolHTML(){
     var packs = poolPacks();
     var selectedCount = Object.keys(state.poolSelection).length;
-    var html = '';
     if(packs.length === 0){
-      html += '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No washed packs waiting — they\'ll appear here once a wash cycle passes.</div>';
-      return html;
+      return '<div style="text-align:center; color:var(--faint); font-size:14px; padding:64px 0;">No washed packs waiting — they\'ll appear here once a wash cycle passes.</div>';
     }
-    html += '<div class="hint">Select which washed packs are going into the steriliser now — they can come from more than one wash load.</div>';
+    // Group by washer load, so the cycle number written on the physical pouch is the
+    // first, biggest thing staff see — matching against a handwritten number is the
+    // actual task here, not reading pack names.
+    var groups = {}, order = [];
     packs.forEach(function(p){
-      var load = findLoad(p.washerLoadId);
-      var checked = !!state.poolSelection[p.id];
-      html += '<label class="pack-item" style="display:flex; align-items:center; gap:12px; cursor:pointer;">'+
-        '<input type="checkbox" data-pool-check="'+p.id+'" '+(checked?"checked":"")+' style="width:22px; height:22px; flex:none;">'+
-        '<div style="flex:1;"><div class="pack-item-name">'+esc(p.name)+'</div>'+
-        '<div style="font-size:12px; color:var(--faint);">From '+esc(load?load.id:"—")+(load&&load.cycleNo?' · Cycle '+esc(load.cycleNo):'')+'</div></div>'+
-      '</label>';
+      var key = p.washerLoadId;
+      if(!groups[key]){ groups[key] = { load: findLoad(key), packs: [] }; order.push(key); }
+      groups[key].packs.push(p);
+    });
+    order.sort(function(a,b){
+      var ca = Number(groups[a].load && groups[a].load.cycleNo) || 0;
+      var cb = Number(groups[b].load && groups[b].load.cycleNo) || 0;
+      return ca - cb;
+    });
+    var html = '<div class="hint">Match the cycle number written on the pouch to a group below, then select which packs are going into the steriliser now.</div>';
+    order.forEach(function(key){
+      var g = groups[key];
+      var cycleLabel = g.load && g.load.cycleNo ? g.load.cycleNo : "—";
+      var allChecked = g.packs.every(function(p){ return !!state.poolSelection[p.id]; });
+      html += '<div class="pool-group">';
+      html += '<div class="pool-group-head">'+
+        '<div><div class="pool-group-cycle">Cycle '+esc(cycleLabel)+'</div>'+
+        '<div class="pool-group-sub">'+esc(g.load?g.load.id:"—")+'</div></div>'+
+        '<button class="pool-select-all" data-select-cycle="'+esc(key)+'">'+(allChecked?"Deselect all":"Select all")+'</button>'+
+      '</div>';
+      g.packs.forEach(function(p){
+        var checked = !!state.poolSelection[p.id];
+        html += '<label class="pack-item" style="display:flex; align-items:center; gap:12px; cursor:pointer; margin-left:12px;">'+
+          '<input type="checkbox" data-pool-check="'+p.id+'" '+(checked?"checked":"")+' style="width:22px; height:22px; flex:none;">'+
+          '<div class="pack-item-name">'+esc(p.name)+'</div>'+
+        '</label>';
+      });
+      html += '</div>';
     });
     html += '<div class="btn-row" style="margin-top:12px;"><button class="btn btn-primary" id="btn-start-batch" '+(selectedCount>0?"":"disabled")+'>🧪 Start steriliser batch ('+selectedCount+' selected)</button></div>';
     return html;
